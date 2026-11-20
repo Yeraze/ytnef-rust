@@ -1,5 +1,7 @@
 //! Shared by the `ytnef` and `ytnefprint` binaries: replaying the messages the
-//! C library prints while it parses.
+//! C library prints while it parses, and `ytnef` file processing.
+
+pub mod process;
 
 use std::io::{self, Write};
 
@@ -55,10 +57,27 @@ fn handler_message(attr: u32, reason: &HandlerError, size: usize, verbose: u32) 
             "ERROR DURING MAPI READ\nRead {} bytes, Expected {size} bytes\n{len} bytes missing\n",
             size - len
         ),
+        (_, HandlerError::Overrun { extra }) if verbose >= 1 => format!(
+            "ERROR DURING MAPI READ\nRead {} bytes, Expected {size} bytes\n{extra} bytes extra\n",
+            size + extra
+        ),
         (id::RECIP_TABLE, HandlerError::Truncated { .. }) => sizecheck(408),
-        // the value itself runs past the block; C checks other reads at
-        // other lines, which the Rust error does not identify
-        (_, HandlerError::Truncated { .. }) if mapi => sizecheck(564),
+        (_, HandlerError::MapiTruncated { what, .. }) if mapi => sizecheck(match *what {
+            "property count" => 468,
+            "property tag" => 480,
+            "name guid" => 489,
+            "name count" => 493,
+            "name length" => 502,
+            "name" => 509,
+            "name id" => 518,
+            "value count" => 530,
+            "value length" => 557,
+            "PT_I2 value" => 594,
+            "32-bit value" => 609,
+            "64-bit value" => 621,
+            "PT_CLSID value" => 631,
+            _ => 564, // a variable-length value
+        }),
         // a short date, and anything else C rejects without a message
         _ => String::new(),
     };
@@ -87,6 +106,15 @@ fn error_message(e: &Error, buf: &[u8], verbose: u32) -> String {
         Error::NoChecksum { .. } => "ERROR: Unable to read checksum.\n".into(),
         Error::BadChecksum { .. } => "ERROR: Checksum mismatch. Data corruption?:\n".into(),
         Error::InHandler {
+            attr: id::SENT_FOR,
+            offset,
+            ..
+        } => {
+            let size = attr_size(buf, *offset);
+            let data = buf.get(offset + 9..).unwrap_or_default();
+            sent_for_failure(&data[..size.min(data.len())], verbose)
+        }
+        Error::InHandler {
             attr,
             offset,
             reason,
@@ -104,6 +132,35 @@ fn error_message(e: &Error, buf: &[u8], verbose: u32) -> String {
     }
 }
 
+/// C `TNEFSentFor` on a payload it rejects: the debug prints up to the
+/// failing `SIZECHECK`, then its message.
+fn sent_for_failure(d: &[u8], verbose: u32) -> String {
+    let mut s = String::new();
+    let mut pos = 0;
+    let lossy = |b: &[u8]| String::from_utf8_lossy(upto_nul(b)).into_owned();
+    while pos < d.len() {
+        for (len_line, data_line) in [(703, 706), (711, 714)] {
+            let Some(n) = d.get(pos..pos + 2) else {
+                return s + &sizecheck(len_line);
+            };
+            let n = usize::from(u16::from_le_bytes([n[0], n[1]]));
+            pos += 2;
+            let Some(v) = d.get(pos..pos + n) else {
+                return s + &sizecheck(data_line);
+            };
+            pos += n;
+            if verbose >= 1 {
+                s += &if len_line == 703 {
+                    format!("Sent For : {}", lossy(v))
+                } else {
+                    format!("<{}>\n", lossy(v))
+                };
+            }
+        }
+    }
+    s
+}
+
 /// Payload size from the attribute header at `offset`.
 fn attr_size(buf: &[u8], offset: usize) -> usize {
     buf.get(offset + 5..)
@@ -111,12 +168,30 @@ fn attr_size(buf: &[u8], offset: usize) -> usize {
         .map_or(0, |b| u32::from_le_bytes(*b) as usize)
 }
 
-/// Offset of the attribute header an error points at, if it names one.
-fn error_attr_offset(e: &Error) -> Option<usize> {
+/// Offset of the attribute header an error points at. Read errors and an
+/// oversized attribute name no offset: the failing attribute is the first
+/// whose payload and checksum run past the end or whose size is over the cap.
+fn error_attr_offset(e: &Error, buf: &[u8], limits: &Limits) -> Option<usize> {
     match e {
         Error::EmptyAttribute { offset, .. }
         | Error::BadChecksum { offset, .. }
         | Error::InHandler { offset, .. } => Some(*offset),
+        Error::Truncated { .. }
+        | Error::NoChecksum { .. }
+        | Error::LimitExceeded {
+            what: "attribute size",
+            ..
+        } => {
+            let mut at = 6;
+            loop {
+                let size = attr_size(buf, at);
+                let next = at + 9 + size + 2;
+                if size > limits.max_attr_size || next > buf.len() {
+                    return Some(at);
+                }
+                at = next;
+            }
+        }
         _ => None,
     }
 }
@@ -196,7 +271,7 @@ pub fn parse_reported<'a>(
         Err(e) => {
             if verbose >= 1 {
                 // replay what parsed cleanly before the failing attribute
-                let end = error_attr_offset(e).unwrap_or(0);
+                let end = error_attr_offset(e, buf, limits).unwrap_or(0);
                 if let Some(t) = buf
                     .get(..end)
                     .and_then(|b| ytnef_core::parse(b, limits).ok())

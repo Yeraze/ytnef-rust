@@ -1,0 +1,83 @@
+name: Fuzz
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: Seconds per target
+        default: "600"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [parse, decompress_rtf, mapi, recurrence, cli_process]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - run: cargo install cargo-fuzz --locked
+      - name: Restore corpus
+        uses: actions/cache/restore@v4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+      - name: Seed corpus from fixtures
+        run: scripts/fuzz-seed.sh ${{ matrix.target }}
+      - name: Fuzz
+        working-directory: fuzz
+        run: >
+          cargo fuzz run -O ${{ matrix.target }} corpus/${{ matrix.target }} --
+          -max_total_time=${{ inputs.seconds || '600' }}
+          -rss_limit_mb=2048 -malloc_limit_mb=512 -timeout=10
+      - name: Minimize corpus
+        if: success()
+        working-directory: fuzz
+        run: cargo fuzz cmin -O ${{ matrix.target }} corpus/${{ matrix.target }}
+      - name: Save corpus
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+
+  differential:
+    needs: fuzz
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Restore parse corpus
+        uses: actions/cache/restore@v4
+        with:
+          path: fuzz/corpus/parse
+          key: fuzz-corpus-parse-${{ github.run_id }}
+          restore-keys: fuzz-corpus-parse-
+      - run: sudo apt-get update && sudo apt-get install -y autoconf automake libtool
+      - name: Build C oracle (ASan + UBSan)
+        run: scripts/build-oracle.sh
+        env:
+          YTNEF_ORACLE_ASAN: "1"
+      - name: Differential run over the fuzz corpus
+        run: cargo test -p ytnef-cli --test differential --locked -- --nocapture
+        env:
+          YTNEF_ORACLE: target/oracle-asan
+          YTNEF_DIFF_CORPUS: fuzz/corpus/parse

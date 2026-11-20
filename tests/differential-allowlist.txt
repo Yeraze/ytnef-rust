@@ -1,9 +1,11 @@
 # Known C/Rust differences for crates/ytnef-cli/tests/differential.rs.
 #
-#   <check> <fixture>   # reason
+#   <check> <fixture> [match text]   # reason
 #
 # check:   dump | ytnefprint | ytnefprint-v | ytnef
-# fixture: path under tests/fixtures, a "dir/" prefix, or "*" for all.
+# fixture: path under tests/fixtures, a "dir/" prefix, or "*" for all;
+#          "corpus/" for inputs from YTNEF_DIFF_CORPUS (nightly fuzz corpus).
+# match:   optional; the first differing line must contain it.
 # A listed pair may differ; anything else must match the C oracle exactly.
 
 # check also: ytnef-v (-v -f) | ytnef-all (-a -F -H -f) | ytnef-list (no -f)
@@ -30,3 +32,26 @@ dump        poc/issue34-DecompressRTF                     # MAPI subject: C maps
 #   - FILETIME month boundary: C prints the 1st as "last day + 1" of the prior month
 #   - UTF-16 -> UTF-8: overlong / surrogate handling
 #   - RTF MELA: uncompressed size not trusted
+
+# Fuzz-found (#8), kept on purpose:
+# attRenddata: C memcpy's the 14 spec bytes into a padded 16-byte struct, so
+# its dwFlags is the high half of the real one and "MAC Binary" never prints
+ytnefprint    fuzz/renddata-mac-binary.tnef
+ytnefprint-v  fuzz/renddata-mac-binary.tnef
+# RTF text: C drops every "H" that does not start HYPERLINK (rtf_text.rs)
+ytnef         fuzz/rtf-text-stray-h.tnef
+ytnef-v       fuzz/rtf-text-stray-h.tnef
+ytnef-all     fuzz/rtf-text-stray-h.tnef
+
+# The same known differences in fuzz-corpus inputs (mutated fixtures)
+ytnef         corpus/  C Some("OUT/.        # names lose leading dots
+ytnef-v       corpus/  C Some("OUT/.
+ytnef-all     corpus/  C Some("OUT/.
+ytnefprint    corpus/  MAC Binary Encoding
+ytnefprint-v  corpus/  MAC Binary Encoding
+ytnef         corpus/  | DESCRIPTION:     # stray "H" in RTF text
+ytnef-v       corpus/  | DESCRIPTION:
+ytnef-all     corpus/  | DESCRIPTION:
+ytnef         corpus/  file x.dat         # nesting depth 8 vs 16 (nested-tnef.tnef)
+ytnef-v       corpus/  memory block
+ytnef-all     corpus/  OUT/x.dat

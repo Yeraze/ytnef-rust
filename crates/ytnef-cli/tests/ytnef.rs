@@ -227,3 +227,16 @@ fn exports() {
     assert_eq!(o.stdout, b"calendar.ics\n");
     assert!(names(&cwd).is_empty());
 }
+
+/// Fuzz-found: an unknown RTF magic is reported as in C, even when the
+/// header's raw size is above `Limits::max_rtf_out`.
+#[test]
+fn rtf_unknown_magic_before_size_cap() {
+    let out = scratch("rtf-magic");
+    let o = extract(&out, "fuzz/rtf-bad-magic-huge-size.tnef");
+    let s = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        s.contains("Unknown compression type (magic number 414500)\n"),
+        "{s}"
+    );
+}

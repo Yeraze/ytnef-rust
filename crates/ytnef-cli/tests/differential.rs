@@ -8,6 +8,12 @@
 //! Without `YTNEF_ORACLE` the test is skipped. Every fixture under
 //! `tests/fixtures/` is run through each check; a mismatch fails unless
 //! `tests/differential-allowlist.txt` lists it.
+//!
+//! `YTNEF_DIFF_CORPUS=<dir>[:<dir>...]` adds every file in those directories
+//! (e.g. `fuzz/corpus/parse`), named `corpus/<file>` for the allowlist. Use it
+//! with the sanitizer oracle (`YTNEF_ORACLE_ASAN=1 scripts/build-oracle.sh`,
+//! `YTNEF_ORACLE=target/oracle-asan`): an input C crashes or hits UB on has
+//! no reference output, so it is counted and skipped.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -39,8 +45,11 @@ fn corpus() -> Vec<String> {
     v
 }
 
-/// `(check, fixture pattern)` pairs; pattern is a path, a `dir/` prefix, or `*`.
-struct Allowlist(Vec<(String, String)>);
+/// `(check, fixture pattern, match text)`; pattern is a path, a `dir/`
+/// prefix, or `*`. A non-empty match text must appear in the first
+/// differing line, so a pattern like `corpus/` only allows one known kind
+/// of difference.
+struct Allowlist(Vec<(String, String, String)>);
 
 impl Allowlist {
     fn load() -> Self {
@@ -50,18 +59,21 @@ impl Allowlist {
                 .map(|l| l.split('#').next().unwrap())
                 .filter_map(|l| {
                     let mut w = l.split_whitespace();
-                    Some((w.next()?.to_owned(), w.next()?.to_owned()))
+                    let check = w.next()?.to_owned();
+                    let pattern = w.next()?.to_owned();
+                    Some((check, pattern, w.collect::<Vec<_>>().join(" ")))
                 })
                 .collect(),
         )
     }
 
-    fn allows(&self, check: &str, fixture: &str) -> bool {
-        self.0.iter().any(|(c, p)| {
+    fn allows(&self, check: &str, fixture: &str, diff: &str) -> bool {
+        self.0.iter().any(|(c, p, m)| {
             c == check
                 && (p == "*"
                     || p == fixture
                     || (p.ends_with('/') && fixture.starts_with(p.as_str())))
+                && diff.contains(m.as_str())
         })
     }
 }
@@ -72,9 +84,16 @@ fn fnv(b: &[u8]) -> u64 {
     })
 }
 
+/// Exit code a sanitized oracle uses for a memory error or UB.
+const SANITIZER_EXIT: i32 = 86;
+
 /// Exit code and stdout.
 fn run(cmd: &mut Command) -> String {
-    let o = cmd.output().unwrap();
+    let o = cmd
+        .env("ASAN_OPTIONS", "exitcode=86:detect_leaks=0")
+        .env("UBSAN_OPTIONS", "halt_on_error=1:exitcode=86")
+        .output()
+        .unwrap();
     format!(
         "exit={:?}\n{}",
         o.status.code(),
@@ -100,12 +119,16 @@ fn extract(bin: &Path, flags: &[&str], fixture: &Path, out: &Path) -> String {
     files.sort();
     for f in files {
         let b = fs::read(&f).unwrap_or_default();
-        s += &format!(
-            "file {} {}:{:016x}\n",
-            f.file_name().unwrap().to_string_lossy(),
-            b.len(),
-            fnv(&b)
-        );
+        let name = f.file_name().unwrap().to_string_lossy();
+        // text exports line by line, so a difference shows what changed
+        if [".ics", ".vcf", ".vcard"].iter().any(|e| name.ends_with(e)) {
+            s += &format!("file {name}\n");
+            for l in String::from_utf8_lossy(&b).lines() {
+                s += &format!("| {l}\n");
+            }
+        } else {
+            s += &format!("file {name} {}:{:016x}\n", b.len(), fnv(&b));
+        }
     }
     s
 }
@@ -252,8 +275,27 @@ fn differential() {
     let rust_ytnef = Path::new(env!("CARGO_BIN_EXE_ytnef"));
     let (mut checks, mut allowed, mut failures) = (0, 0, Vec::new());
 
-    for name in corpus() {
-        let path = repo().join("tests/fixtures").join(&name);
+    let fixtures = corpus()
+        .into_iter()
+        .map(|n| (repo().join("tests/fixtures").join(&n), n));
+    let mut extra = Vec::new();
+    for dir in std::env::var("YTNEF_DIFF_CORPUS")
+        .unwrap_or_default()
+        .split(':')
+    {
+        if dir.is_empty() {
+            continue;
+        }
+        for e in fs::read_dir(repo().join(dir)).unwrap() {
+            let p = e.unwrap().path();
+            let n = format!("corpus/{}", p.file_name().unwrap().to_string_lossy());
+            extra.push((p, n));
+        }
+    }
+    extra.sort();
+    let mut c_crashed = 0;
+
+    for (path, name) in fixtures.chain(extra) {
         let out = |side: &str| tmp.join(side).join(name.replace('/', "_"));
         let ytnef = |check: &'static str, flags: &[&str]| {
             (
@@ -292,21 +334,29 @@ fn differential() {
             ytnef("ytnef-v", &["-v"]),
             ytnef("ytnef-all", &["-a", "-F", "-H"]),
         ];
+        // `exit=Some(86)` as the whole status line, or killed by a signal
+        let crashed = |c: &str| {
+            c.starts_with(&format!("exit=Some({SANITIZER_EXIT})\n")) || c.starts_with("exit=None")
+        };
+        if results.iter().any(|(_, c, _)| crashed(c)) {
+            c_crashed += 1;
+            eprintln!("note: C oracle crashed on {name}, skipped");
+            continue;
+        }
         for (check, c, rust) in results {
             checks += 1;
             let ok = c == rust;
-            match (ok, allow.allows(check, &name)) {
+            let diff = first_diff(&c, &rust);
+            match (ok, allow.allows(check, &name, &diff)) {
                 (true, true) => eprintln!("note: {check} {name} matches but is allowlisted"),
                 (true, false) => {}
                 (false, true) => allowed += 1,
-                (false, false) => {
-                    failures.push(format!("{check} {name}: {}", first_diff(&c, &rust)))
-                }
+                (false, false) => failures.push(format!("{check} {name}: {diff}")),
             }
         }
     }
     eprintln!(
-        "differential: {checks} checks, {allowed} allowlisted diffs, {} failures",
+        "differential: {checks} checks, {allowed} allowlisted diffs, {} failures, {c_crashed} inputs crashed C",
         failures.len()
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
