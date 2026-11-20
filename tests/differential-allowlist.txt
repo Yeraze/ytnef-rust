@@ -2,13 +2,36 @@
 #
 #   <check> <fixture>   # reason
 #
-# check:   ytnefprint | ytnef
+# check:   dump | ytnefprint | ytnef
 # fixture: path under tests/fixtures, a "dir/" prefix, or "*" for all.
 # A listed pair may differ; anything else must match the C oracle exactly.
 
 # Not implemented yet: drop these as the phases land.
 ytnefprint  *   # Rust ytnefprint is a stub until Phase 2 (#5)
 ytnef       *   # Rust ytnef is a stub until Phase 3 (#6)
+
+# MAPI property blocks stay raw until Phase 1b (#3):
+# C fills the subject from PR_SUBJECT when attSubject is absent
+dump        multi-value-attribute.tnef                    # subject fallback from MAPI
+dump        winmail.dat                                   # subject fallback from MAPI
+dump        poc/issue34-DecompressRTF                     # subject fallback from MAPI
+# C rejects a malformed MAPI block (-6) before reaching later attributes
+dump        poc/issue37-MAPIPrint-nullptr                    # MAPI decode error
+dump        poc/issue41-SwapDWord-heapoverflow               # MAPI decode error
+dump        poc/issue42-TNEFFillMapi-alloc                   # MAPI decode error
+dump        poc/issue45-SIZECHECK-overflow                   # MAPI decode error
+dump        poc/issue47-TNEFFillMapi-overwrite               # MAPI decode error
+dump        poc/issue48-TNEFDefaultHandler-overread          # MAPI decode error
+dump        poc/issue49-SwapDWord-invalid-read               # MAPI decode error
+dump        poc/issue50-TNEFFillMapi-overflow                # MAPI decode error
+dump        poc/issue51-TNEFFillMapi-alloc                   # MAPI decode error
+dump        poc/issue65-TNEFFreeMapiProps-segv               # MAPI decode error
+dump        poc/issue66-TNEFFreeMapiProps-segv               # MAPI decode error
+dump        poc/issue67-MAPIFindUserProp-segv                # MAPI decode error
+dump        poc/issue68-TNEFFreeMapiProps-abrt               # MAPI decode error
+dump        poc/issue69-TNEFFreeMapiProps-oom                # MAPI decode error
+dump        poc/issue70-TNEFFreeMapiProps-segv               # MAPI decode error
+dump        poc/issue92-ProcessTNEF-oob                      # MAPI decode error
 
 # Intentional fixes (research doc §3.3, §5.5). Each gets a fixture-specific
 # entry and a unit test when its phase lands:

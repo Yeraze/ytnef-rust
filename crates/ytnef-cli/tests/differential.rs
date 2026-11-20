@@ -105,6 +105,96 @@ fn extract(bin: &Path, fixture: &Path, out: &Path) -> String {
     s
 }
 
+fn esc(k: &str, b: &[u8]) -> String {
+    let mut s = format!("{k}={}:", b.len());
+    for &c in b {
+        if (0x20..0x7f).contains(&c) && c != b'\\' {
+            s.push(char::from(c));
+        } else {
+            s += &format!("\\x{c:02x}");
+        }
+    }
+    s + "\n"
+}
+
+/// C `char[cap]` field filled by `memcpy(min(len, copy))`, read with `strnlen`.
+fn fixed(k: &str, b: Option<&[u8]>, copy: usize) -> String {
+    let b = b.unwrap_or_default();
+    let b = &b[..b.len().min(copy)];
+    let b = &b[..b.iter().position(|&c| c == 0).unwrap_or(b.len())];
+    if b.is_empty() {
+        String::new()
+    } else {
+        esc(k, b)
+    }
+}
+
+fn opt(k: &str, b: Option<&[u8]>) -> String {
+    b.map(|b| esc(k, b)).unwrap_or_default()
+}
+
+fn blob(k: &str, b: Option<&[u8]>) -> String {
+    b.map(|b| format!("{k}={}:{:016x}\n", b.len(), fnv(b)))
+        .unwrap_or_default()
+}
+
+fn date(k: &str, d: Option<ytnef_core::Dtr>) -> String {
+    match d {
+        Some(d) if d != ytnef_core::Dtr::default() => format!(
+            "{k}={}-{}-{} {}:{}:{} dow{}\n",
+            d.year, d.month, d.day, d.hour, d.minute, d.second, d.day_of_week
+        ),
+        _ => String::new(),
+    }
+}
+
+/// The Rust parse rendered in `tests/oracle/tnefdump.c`'s format.
+fn dump(buf: &[u8]) -> String {
+    let t = match ytnef_core::parse(buf, &ytnef_core::Limits::default()) {
+        Ok(t) => t,
+        Err(e) => return format!("rc={}\n", e.code()),
+    };
+    let version = t
+        .version
+        .map(|(major, minor)| format!("TNEF{major}.{minor}"));
+    let priority = t.priority.map(|p| match p {
+        3 => "high",
+        2 => "normal",
+        1 => "low",
+        _ => "N/A",
+    });
+    let mut s = String::from("rc=0\n");
+    s += &opt("version", version.as_deref().map(str::as_bytes));
+    s += &opt("from", t.from);
+    s += &opt("subject", t.subject);
+    s += &opt("body", t.body);
+    s += &fixed("class", t.message_class, 49);
+    s += &fixed("id", t.message_id, 50);
+    s += &fixed("parent", t.parent_id, 50);
+    s += &opt("priority", priority.map(str::as_bytes));
+    s += &opt("codepage", t.oem_codepage);
+    s += &opt("origclass", t.original_message_class);
+    s += &date("sent", t.date_sent);
+    s += &date("received", t.date_received);
+    s += &date("modified", t.date_modified);
+    s += &date("start", t.date_start);
+    s += &date("end", t.date_end);
+    let head = std::iter::once(("head".to_owned(), &t.head));
+    let rest = t.attachments.iter().enumerate();
+    for (name, a) in head.chain(rest.map(|(i, a)| (format!("attachment {i}"), a))) {
+        s += &format!("[{name}]\n");
+        if a.render.atyp != 0 {
+            s += &format!("atyp={}\n", a.render.atyp);
+        }
+        s += &opt("title", a.title);
+        s += &blob("data", a.data);
+        s += &blob("icon", a.icon);
+        s += &date("create", a.create_date);
+        s += &date("modify", a.modify_date);
+    }
+    s
+}
+
 fn first_diff(a: &str, b: &str) -> String {
     let (mut la, mut lb) = (a.lines(), b.lines());
     for n in 1.. {
@@ -136,6 +226,11 @@ fn differential() {
         let path = repo().join("tests/fixtures").join(&name);
         let out = |side: &str| tmp.join(side).join(name.replace('/', "_"));
         let results = [
+            (
+                "dump",
+                run(Command::new(oracle.join("tnefdump")).arg(&path)),
+                format!("exit=Some(0)\n{}", dump(&fs::read(&path).unwrap())),
+            ),
             (
                 "ytnefprint",
                 run(Command::new(oracle.join("ytnefprint")).arg(&path)),
