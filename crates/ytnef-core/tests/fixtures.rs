@@ -1,7 +1,9 @@
 use std::path::Path;
 
 fn fixture(name: &str) -> Vec<u8> {
-    let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures").join(name);
+    let p = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures")
+        .join(name);
     std::fs::read(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
 }
 

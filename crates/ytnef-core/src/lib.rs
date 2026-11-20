@@ -13,7 +13,8 @@ pub const TNEF_SIGNATURE: u32 = 0x223E_9F78;
 
 /// True if `buf` starts with the TNEF signature.
 pub fn has_signature(buf: &[u8]) -> bool {
-    buf.first_chunk::<4>().is_some_and(|b| u32::from_le_bytes(*b) == TNEF_SIGNATURE)
+    buf.first_chunk::<4>()
+        .is_some_and(|b| u32::from_le_bytes(*b) == TNEF_SIGNATURE)
 }
 
 #[cfg(test)]
