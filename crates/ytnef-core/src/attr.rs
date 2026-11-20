@@ -3,6 +3,7 @@
 
 use crate::error::{Error, HandlerError};
 use crate::limits::{Checksum, Limits, Options};
+use crate::mapi;
 use crate::reader::{Reader, Truncated};
 use crate::{Attachment, Dtr, RendData, Tnef};
 
@@ -160,7 +161,10 @@ fn handle<'a>(t: &mut Tnef<'a>, att: u32, d: &'a [u8], l: &Limits) -> Result<(),
         id::MESSAGE_ID => t.message_id = Some(d),
         id::PARENT_ID => t.parent_id = Some(d),
         id::OEM_CODEPAGE => t.oem_codepage = Some(d),
-        id::MAPI_PROPS => t.mapi = Some(d),
+        id::MAPI_PROPS => {
+            t.mapi = mapi::parse(d, l)?;
+            mapi::fill_subject(&mut t.subject, &t.mapi, l.max_subject)?;
+        }
         id::DATE_SENT => t.date_sent = Some(Dtr::parse(d)?),
         id::DATE_RECD => t.date_received = Some(Dtr::parse(d)?),
         id::DATE_MODIFIED => t.date_modified = Some(Dtr::parse(d)?),
@@ -199,7 +203,11 @@ fn handle<'a>(t: &mut Tnef<'a>, att: u32, d: &'a [u8], l: &Limits) -> Result<(),
         id::ATTACH_META_FILE => t.current_attachment().icon = Some(capped(d, l.max_icon)?),
         id::ATTACH_CREATE_DATE => t.current_attachment().create_date = Some(Dtr::parse(d)?),
         id::ATTACH_MODIFY_DATE => t.current_attachment().modify_date = Some(Dtr::parse(d)?),
-        id::ATTACHMENT => t.current_attachment().mapi = Some(d),
+        id::ATTACHMENT => {
+            let props = mapi::parse(d, l)?;
+            mapi::fill_subject(&mut t.subject, &props, l.max_subject)?;
+            t.current_attachment().mapi = props;
+        }
         // the rest only print in C debug mode; they stay in `Tnef::attributes`
         _ => {}
     }

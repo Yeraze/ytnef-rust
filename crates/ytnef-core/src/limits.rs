@@ -28,6 +28,13 @@ pub struct Limits {
     pub max_title: usize,
     /// `attAttachMetaFile` (icon) payload. C: 10 000.
     pub max_icon: usize,
+    /// MAPI properties per block, values per multi-valued property, and
+    /// names per named property. C: 1000.
+    pub max_mapi_count: usize,
+    /// One MAPI property name, in bytes. C: 1000.
+    pub max_mapi_name: usize,
+    /// One variable-length MAPI value. C: 10 MiB.
+    pub max_mapi_value: usize,
     /// Decompressed RTF output (new). Default 64 MiB.
     pub max_rtf_out: usize,
     /// Embedded-TNEF recursion depth (new; C recursion is unbounded). Default 8.
@@ -47,6 +54,9 @@ impl Default for Limits {
             max_original_message_class: 100,
             max_title: 260,
             max_icon: 10_000,
+            max_mapi_count: 1000,
+            max_mapi_name: 1000,
+            max_mapi_value: 10 * MIB,
             max_rtf_out: 64 * MIB,
             max_nesting: 8,
         }

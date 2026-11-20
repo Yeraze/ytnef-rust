@@ -54,6 +54,17 @@ pub enum HandlerError {
     BadLength { len: usize },
     #[error("payload length {len} exceeds limit {max}")]
     TooLarge { len: usize, max: usize },
+    /// A count or length that C's `PREALLOCCHECK` rejects (0 or above `max`).
+    #[error("value {value} at byte {offset} outside 1..={max}")]
+    OutOfRange {
+        offset: usize,
+        value: u32,
+        max: usize,
+    },
+    #[error("unknown MAPI property type 0x{prop_type:04x} at byte {offset}")]
+    BadPropType { offset: usize, prop_type: u16 },
+    #[error("{len} bytes left after the last MAPI property")]
+    TrailingBytes { len: usize },
 }
 
 impl From<Truncated> for HandlerError {
