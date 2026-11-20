@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = ["crates/ytnef-core", "crates/ytnef-export", "crates/ytnef-cli"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.85"
+license = "GPL-2.0-or-later"
+repository = "https://github.com/Yeraze/ytnef-rust"
+authors = ["Randall Hand"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[profile.release]
+overflow-checks = true

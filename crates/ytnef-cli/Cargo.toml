@@ -1,0 +1,23 @@
+[package]
+name = "ytnef-cli"
+description = "ytnef and ytnefprint command-line tools (Rust port)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "ytnef"
+path = "src/bin/ytnef.rs"
+
+[[bin]]
+name = "ytnefprint"
+path = "src/bin/ytnefprint.rs"
+
+[dependencies]
+ytnef-core = { path = "../ytnef-core", version = "0.0.0" }
+
+[lints]
+workspace = true

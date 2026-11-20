@@ -1,0 +1,15 @@
+[package]
+name = "ytnef-export"
+description = "vCard / VTODO / VEVENT / MAPI-dump formatters for parsed TNEF messages"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+ytnef-core = { path = "../ytnef-core", version = "0.0.0" }
+
+[lints]
+workspace = true
