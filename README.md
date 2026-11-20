@@ -19,7 +19,7 @@ short, documented list of bug fixes.
 - Derived from C ytnef, same license (GPL-2.0-or-later).
 - C ytnef stays the reference oracle: we diff outputs against it on a shared corpus.
 - `tests/fixtures/` is copied from the C repo's `test-data/` (see its README).
-- A drop-in C-ABI `libytnef.so.0` is planned for a later phase.
+- `crates/ytnef-capi` builds a drop-in `libytnef.so.0`: same SONAME, exported symbols, struct layouts and headers, so C programs (Evolution, Claws Mail, ...) link against it unchanged.
 
 ## Layout
 
@@ -28,6 +28,7 @@ short, documented list of bug fixes.
 | `crates/ytnef-core` | Parser library. `#![forbid(unsafe_code)]`, no I/O, no printing |
 | `crates/ytnef-export` | vCard / VTODO / VEVENT / MAPI-dump formatters |
 | `crates/ytnef-cli` | `ytnef` and `ytnefprint` binaries |
+| `crates/ytnef-capi` | C ABI `libytnef.so.0`; the only crate with `unsafe` |
 
 ## Build
 
@@ -39,6 +40,16 @@ cargo test
 ```
 
 Binaries land in `target/release/`.
+
+Install the C library (`libytnef.so.0`, `libytnef.a`, `libytnef.pc`, the
+original headers) with [cargo-c](https://github.com/lu-zero/cargo-c):
+
+```sh
+cargo cinstall -p ytnef-capi --release --prefix /usr --destdir "$DESTDIR"
+```
+
+`scripts/capi-link-test.sh` links the C `ytnef`, `ytnefprint` and
+`tnefdump` against it and diffs them with the C library on every fixture.
 
 ## License
 

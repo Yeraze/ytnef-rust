@@ -48,3 +48,29 @@ jobs:
         run: cargo test -p ytnef-cli --test differential --locked -- --nocapture
         env:
           YTNEF_ORACLE: target/oracle
+
+  capi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y autoconf automake libtool
+      - name: Build C oracle
+        run: scripts/build-oracle.sh
+      - name: Build libytnef.so.0
+        run: cargo build --release -p ytnef-capi --locked
+      - name: Link the C programs against it and diff with the oracle
+        run: scripts/capi-link-test.sh
+      - name: Same, with ASan + UBSan + LeakSanitizer
+        run: scripts/capi-link-test.sh
+        env:
+          YTNEF_CAPI_ASAN: 1
+      - name: cargo cinstall (SONAME, libytnef.pc, headers)
+        run: |
+          curl -sSfL https://github.com/lu-zero/cargo-c/releases/download/v0.10.26/cargo-c-x86_64-unknown-linux-musl.tar.gz | tar xz -C ~/.cargo/bin
+          cargo cinstall -p ytnef-capi --release --locked --destdir "$RUNNER_TEMP/stage" --prefix /usr --libdir /usr/lib
+          cd "$RUNNER_TEMP/stage/usr"
+          readelf -d lib/libytnef.so | grep -F 'Library soname: [libytnef.so.0]'
+          grep -Fx 'Cflags: -I${includedir}' lib/pkgconfig/libytnef.pc
+          for h in ytnef.h tnef-types.h tnef-errors.h mapi.h mapidefs.h mapitags.h; do test -f "include/$h"; done

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/ytnef-core", "crates/ytnef-export", "crates/ytnef-cli"]
+members = ["crates/ytnef-core", "crates/ytnef-export", "crates/ytnef-cli", "crates/ytnef-capi"]
 
 [workspace.package]
 version = "0.0.0"
