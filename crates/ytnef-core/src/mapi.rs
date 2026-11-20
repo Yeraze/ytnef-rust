@@ -85,10 +85,97 @@ impl Prop<'_> {
             _ => (self.tag >> 16) as u16,
         }
     }
+
+    /// The tag C stores and looks up: [`Prop::id`] with the type, minus [`MV_FLAG`].
+    fn c_tag(&self) -> u32 {
+        (u32::from(self.id()) << 16) | u32::from(self.prop_type())
+    }
+}
+
+/// A parsed property block, in stream order.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MapiProps<'a>(pub Vec<Prop<'a>>);
+
+impl<'a> std::ops::Deref for MapiProps<'a> {
+    type Target = Vec<Prop<'a>>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a> MapiProps<'a> {
+    /// First non-named property with this tag (`PROP_TAG(type, id)`, no
+    /// [`MV_FLAG`]): C's `MAPIFindProperty`.
+    pub fn get(&self, tag: u32) -> Option<&Prop<'a>> {
+        self.iter().find(|p| p.name.is_none() && p.c_tag() == tag)
+    }
+
+    /// First named property with this tag, where the ID is the numeric name
+    /// (or the stored ID for string names): C's `MAPIFindUserProp`.
+    pub fn get_named(&self, tag: u32) -> Option<&Prop<'a>> {
+        self.iter().find(|p| p.name.is_some() && p.c_tag() == tag)
+    }
+}
+
+/// `PROP_TAG(type, id)`.
+pub const fn prop_tag(prop_type: u16, id: u16) -> u32 {
+    ((id as u32) << 16) | prop_type as u32
+}
+
+/// Decode a UTF-16LE value (`PT_UNICODE`, named-property names) up to its
+/// first NUL. Unpaired surrogates become U+FFFD, as in C `to_utf8`; an odd
+/// trailing byte is ignored.
+pub fn utf16(b: &[u8]) -> String {
+    let units = b
+        .chunks_exact(2)
+        .filter_map(|c| c.try_into().ok())
+        .map(u16::from_le_bytes)
+        .take_while(|&u| u != 0);
+    char::decode_utf16(units)
+        .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
+        .collect()
+}
+
+/// Convert a `PT_SYSTIME` FILETIME (100 ns ticks since 1601-01-01 UTC, first
+/// 8 bytes little-endian) to a date, like C `MAPISysTimetoDTRSize`. `None`
+/// if fewer than 8 bytes.
+pub fn filetime(b: &[u8]) -> Option<crate::Dtr> {
+    let ticks = u64::from_le_bytes(*b.first_chunk::<8>()?);
+    let secs = ticks / 10_000_000;
+    let days = secs / 86_400;
+    let (year, month, day) = civil_from_days(days);
+    Some(crate::Dtr {
+        year,
+        month,
+        day,
+        hour: (secs / 3600 % 24) as u16,
+        minute: (secs / 60 % 60) as u16,
+        second: (secs % 60) as u16,
+        // 1601-01-01 was a Monday
+        day_of_week: (days.wrapping_add(1) % 7) as u16,
+    })
+}
+
+/// Days since 1601-01-01 to (year, month, day), after Howard Hinnant's
+/// `civil_from_days`. A u64 FILETIME reaches year 60056 at most, so every
+/// intermediate fits.
+#[allow(clippy::arithmetic_side_effects)]
+fn civil_from_days(days: u64) -> (u16, u16, u16) {
+    // days from 0000-03-01 to 1601-01-01
+    let z = days + 584_694;
+    let era = z / 146_097;
+    let doe = z % 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + u64::from(month <= 2);
+    (year as u16, month as u16, day as u16)
 }
 
 /// Parse a whole property block; every byte must be consumed.
-pub(crate) fn parse<'a>(d: &'a [u8], l: &Limits) -> Result<Vec<Prop<'a>>, HandlerError> {
+pub(crate) fn parse<'a>(d: &'a [u8], l: &Limits) -> Result<MapiProps<'a>, HandlerError> {
     let mut r = Reader::new(d);
     let n = count(&mut r, l.max_mapi_count)?;
     let mut props = Vec::new();
@@ -98,7 +185,7 @@ pub(crate) fn parse<'a>(d: &'a [u8], l: &Limits) -> Result<Vec<Prop<'a>>, Handle
     if !r.is_empty() {
         return Err(HandlerError::TrailingBytes { len: r.remaining() });
     }
-    Ok(props)
+    Ok(MapiProps(props))
 }
 
 /// C fills an empty subject from the first subject-like value, failing
@@ -266,7 +353,7 @@ mod tests {
     fn one(d: &[u8]) -> Result<Prop<'_>, HandlerError> {
         let mut v = parse(d, &Limits::default())?;
         assert_eq!(v.len(), 1);
-        Ok(v.remove(0))
+        Ok(v.0.remove(0))
     }
 
     #[test]
@@ -488,5 +575,114 @@ mod tests {
         let mut s = None;
         assert!(fill_subject(&mut s, &[p(0x0037, b"")], 1000).is_err());
         assert!(fill_subject(&mut s, &[p(0x0037, b"long")], 3).is_err());
+    }
+
+    #[test]
+    fn get_and_get_named() {
+        let plain = |id: u16, ty: u16, name| Prop {
+            tag: tag(id, ty),
+            name,
+            values: vec![],
+        };
+        let named = |n| {
+            Some(Name {
+                guid: [0; 16],
+                kind: n,
+            })
+        };
+        let props = MapiProps(vec![
+            plain(0x8001, pt::LONG, named(NameKind::Id(0x0037))),
+            plain(0x0037, pt::STRING8 | MV_FLAG, None),
+            plain(0x8002, pt::UNICODE, named(NameKind::Strings(vec![]))),
+        ]);
+        let subject = prop_tag(pt::STRING8, 0x0037);
+        assert_eq!(props.get(subject).map(|p| p.tag >> 16), Some(0x0037));
+        assert!(props.get(prop_tag(pt::LONG, 0x0037)).is_none());
+        assert_eq!(
+            props
+                .get_named(prop_tag(pt::LONG, 0x0037))
+                .map(|p| p.tag >> 16),
+            Some(0x8001)
+        );
+        assert!(props.get_named(subject).is_none());
+        assert!(props.get_named(prop_tag(pt::UNICODE, 0x8002)).is_some());
+    }
+
+    #[test]
+    fn utf16_decoding() {
+        let enc = |s: &[u16]| -> Vec<u8> { s.iter().flat_map(|u| u.to_le_bytes()).collect() };
+        assert_eq!(utf16(&enc(&[0x48, 0x69, 0, 0x41])), "Hi");
+        assert_eq!(utf16(&enc(&[0xE9, 0x20AC])), "é€");
+        // U+1F600 as a surrogate pair
+        assert_eq!(utf16(&enc(&[0xD83D, 0xDE00])), "\u{1F600}");
+        // unpaired high and low surrogates
+        assert_eq!(utf16(&enc(&[0xD83D, 0x41, 0xDE00])), "\u{FFFD}A\u{FFFD}");
+        // odd trailing byte dropped
+        assert_eq!(utf16(&[0x41, 0, 0x42]), "A");
+        assert_eq!(utf16(&[]), "");
+    }
+
+    fn ft(y: u16, mo: u16, d: u16, h: u16, mi: u16, s: u16, dow: u16) -> crate::Dtr {
+        crate::Dtr {
+            year: y,
+            month: mo,
+            day: d,
+            hour: h,
+            minute: mi,
+            second: s,
+            day_of_week: dow,
+        }
+    }
+
+    /// FILETIME for a Unix timestamp.
+    fn unix(secs: u64) -> [u8; 8] {
+        ((secs + 11_644_473_600) * 10_000_000).to_le_bytes()
+    }
+
+    #[test]
+    fn filetime_conversion() {
+        assert_eq!(filetime(&[0; 8]), Some(ft(1601, 1, 1, 0, 0, 0, 1)));
+        assert_eq!(filetime(&unix(0)), Some(ft(1970, 1, 1, 0, 0, 0, 4)));
+        // first of a month
+        assert_eq!(
+            filetime(&unix(1_709_251_200)),
+            Some(ft(2024, 3, 1, 0, 0, 0, 5))
+        );
+        assert_eq!(
+            filetime(&unix(1_706_745_599)),
+            Some(ft(2024, 1, 31, 23, 59, 59, 3))
+        );
+        assert_eq!(
+            filetime(&unix(1_704_067_200)),
+            Some(ft(2024, 1, 1, 0, 0, 0, 1))
+        );
+        // leap days, including the 400-year rule
+        assert_eq!(
+            filetime(&unix(1_709_164_800)),
+            Some(ft(2024, 2, 29, 0, 0, 0, 4))
+        );
+        assert_eq!(
+            filetime(&unix(951_782_400)),
+            Some(ft(2000, 2, 29, 0, 0, 0, 2))
+        );
+        assert_eq!(
+            filetime(&unix(4_107_542_400)),
+            Some(ft(2100, 3, 1, 0, 0, 0, 1))
+        );
+        assert_eq!(
+            filetime(&unix(1_735_603_200)),
+            Some(ft(2024, 12, 31, 0, 0, 0, 2))
+        );
+        // extra bytes ignored, short input refused, max value does not panic
+        assert_eq!(filetime(&[0; 12]), Some(ft(1601, 1, 1, 0, 0, 0, 1)));
+        assert_eq!(filetime(&[0; 7]), None);
+        assert!(filetime(&[0xff; 8]).is_some_and(|d| d.year > 60_000));
+    }
+
+    #[test]
+    fn tag_names() {
+        assert_eq!(crate::tags::tag_name(0x0037), Some("PR_SUBJECT"));
+        assert_eq!(crate::tags::tag_name(0x1009), Some("PR_RTF_COMPRESSED"));
+        assert_eq!(crate::tags::tag_name(0x7FFF), None);
     }
 }
