@@ -175,7 +175,7 @@ fn message_strings() {
         msg(id::PARENT_ID, b"pid"),
         msg(id::ORIGINAL_MESSAGE_CLASS, b"orig"),
         msg(id::OEM_CODEPAGE, &[0xE4, 0x04, 0, 0]),
-        msg(id::MAPI_PROPS, &[0, 0, 0, 0]),
+        msg(id::MAPI_PROPS, &[1, 0, 0, 0, 3, 0, 7, 0x0E, 5, 0, 0, 0]),
     ]);
     assert_eq!(t.from, Some(&b"from"[..]));
     assert_eq!(t.subject, Some(&b"subj"[..]));
@@ -185,7 +185,8 @@ fn message_strings() {
     assert_eq!(t.parent_id, Some(&b"pid"[..]));
     assert_eq!(t.original_message_class, Some(&b"orig"[..]));
     assert_eq!(t.oem_codepage, Some(&[0xE4, 0x04, 0, 0][..]));
-    assert_eq!(t.mapi, Some(&[0, 0, 0, 0][..]));
+    assert_eq!(t.mapi.len(), 1);
+    assert_eq!(t.mapi[0].values, [&[5, 0, 0, 0][..]]);
 }
 
 #[test]
@@ -283,7 +284,7 @@ fn attachments() {
         a(id::ATTACH_META_FILE, b"icon"),
         a(id::ATTACH_CREATE_DATE, &DATE),
         a(id::ATTACH_MODIFY_DATE, &DATE),
-        a(id::ATTACHMENT, &[0, 0, 0, 0]),
+        a(id::ATTACHMENT, &[1, 0, 0, 0, 3, 0, 7, 0x0E, 5, 0, 0, 0]),
         a(id::ATTACH_RENDDATA, &[2]),
         a(id::ATTACH_DATA, b"two"),
     ]);
@@ -305,7 +306,7 @@ fn attachments() {
     assert_eq!(one.icon, Some(&b"icon"[..]));
     assert_eq!(one.create_date, Some(DTR));
     assert_eq!(one.modify_date, Some(DTR));
-    assert_eq!(one.mapi, Some(&[0, 0, 0, 0][..]));
+    assert_eq!(one.mapi[0].id(), 0x0E07);
     // short renddata is zero-filled
     assert_eq!(
         t.attachments[1].render,
@@ -373,4 +374,58 @@ fn errors_display() {
         e.to_string(),
         "attribute 0x0002800c at offset 6: payload length 9 exceeds limit 8"
     );
+}
+
+/// One-property MAPI block: PR_SUBJECT as PT_STRING8.
+fn mapi_subject(s: &[u8]) -> Vec<u8> {
+    let mut v = [1u32, 0x0037_001E, 1, u32::try_from(s.len()).unwrap()]
+        .iter()
+        .flat_map(|x| x.to_le_bytes())
+        .collect::<Vec<u8>>();
+    v.extend(s);
+    v.resize(v.len() + (4 - s.len() % 4) % 4, 0);
+    v
+}
+
+#[test]
+fn mapi_subject_fills_missing_subject() {
+    let t = ok(&[msg(id::MAPI_PROPS, &mapi_subject(b"from mapi"))]);
+    assert_eq!(t.subject, Some(&b"from mapi"[..]));
+    assert_eq!(t.mapi[0].values, [&b"from mapi"[..]]);
+    // attSubject first: MAPI does not replace it
+    let t = ok(&[
+        msg(id::SUBJECT, b"att"),
+        msg(id::MAPI_PROPS, &mapi_subject(b"from mapi")),
+    ]);
+    assert_eq!(t.subject, Some(&b"att"[..]));
+    // attSubject later replaces it
+    let t = ok(&[
+        msg(id::MAPI_PROPS, &mapi_subject(b"from mapi")),
+        msg(id::SUBJECT, b"att"),
+    ]);
+    assert_eq!(t.subject, Some(&b"att"[..]));
+    // attachment MAPI fills the message subject too, as in C
+    let t = ok(&[att(
+        attr::LVL_ATTACHMENT,
+        id::ATTACHMENT,
+        &mapi_subject(b"x"),
+    )]);
+    assert_eq!(t.subject, Some(&b"x"[..]));
+}
+
+#[test]
+fn bad_mapi_is_a_handler_error() {
+    for (attr_id, data) in [
+        (id::MAPI_PROPS, vec![0, 0, 0, 0]),
+        (id::MAPI_PROPS, mapi_subject(b"")),
+        (id::MAPI_PROPS, mapi_subject(&[b'a'; 1001])),
+        (id::ATTACHMENT, vec![1, 0, 0, 0, 0x99, 0, 0, 0]),
+    ] {
+        let e = err(&[msg(attr_id, &data)]);
+        assert!(
+            matches!(e, Error::InHandler { attr, .. } if attr == attr_id),
+            "{e}"
+        );
+        assert_eq!(e.code(), -6);
+    }
 }

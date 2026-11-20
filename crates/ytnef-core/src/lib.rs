@@ -1,8 +1,8 @@
 //! TNEF (`winmail.dat`) parser: safe, bounded, no I/O.
 //!
 //! [`parse`] walks the attribute stream, verifies checksums and fills a
-//! [`Tnef`] that borrows from the input. MAPI property blocks are kept raw
-//! for now ([`Tnef::mapi`], [`Attachment::mapi`]).
+//! [`Tnef`] that borrows from the input, including parsed MAPI properties
+//! ([`Tnef::mapi`], [`Attachment::mapi`]).
 #![forbid(unsafe_code)]
 #![deny(
     clippy::indexing_slicing,
@@ -15,6 +15,7 @@
 pub mod attr;
 mod error;
 mod limits;
+pub mod mapi;
 mod reader;
 
 pub use attr::Attribute;
@@ -65,8 +66,8 @@ pub struct Attachment<'a> {
     pub icon: Option<&'a [u8]>,
     pub create_date: Option<Dtr>,
     pub modify_date: Option<Dtr>,
-    /// Raw `attAttachment` MAPI property block.
-    pub mapi: Option<&'a [u8]>,
+    /// `attAttachment` MAPI properties; empty when absent.
+    pub mapi: Vec<mapi::Prop<'a>>,
 }
 
 /// A parsed TNEF stream. Byte strings are raw (no charset decoding) and
@@ -95,8 +96,8 @@ pub struct Tnef<'a> {
     pub date_modified: Option<Dtr>,
     pub date_start: Option<Dtr>,
     pub date_end: Option<Dtr>,
-    /// Raw `attMAPIProps` property block.
-    pub mapi: Option<&'a [u8]>,
+    /// `attMAPIProps` properties; empty when absent.
+    pub mapi: Vec<mapi::Prop<'a>>,
     /// Attachment-level attributes seen before the first `attAttachRenddata`
     /// (C's `starting_attach`).
     pub head: Attachment<'a>,

@@ -63,23 +63,70 @@ fn one_file_contents() {
 }
 
 #[test]
-fn bad_inputs_match_c_errors() {
-    // C return codes from scripts/build-oracle.sh's tnefdump
-    for (name, code) in [
-        ("ytnef-oob-TNEFVersion-SwapWord", -3),
-        ("regress/truncated-field.tnef", -3),
+fn every_fixture_matches_c_return_code() {
+    // `rc=` from scripts/build-oracle.sh's tnefdump, for the whole corpus
+    let mut want = [
+        ("/long-filename.tnef", 0),
+        ("/missing-filenames.tnef", 0),
+        ("/multi-value-attribute.tnef", 0),
+        ("/one-file.tnef", 0),
+        ("/rtf.tnef", 0),
+        ("/winmail.dat", 0),
+        ("/ytnef-oob-TNEFVersion-SwapWord", -3),
         ("regress/duplicate-attribute.tnef", -3),
         ("regress/duplicate-mapi.tnef", -5),
+        ("regress/early-attachment-attr.tnef", 0),
+        ("regress/empty-string-prop.tnef", 0),
+        ("regress/nested-tnef.tnef", 0),
+        ("regress/path-traversal.tnef", 0),
+        ("regress/short-attachment.tnef", 0),
+        ("regress/truncated-field.tnef", -3),
+        ("poc/issue34-DecompressRTF", 0),
+        ("poc/issue37-MAPIPrint-nullptr", -6),
+        ("poc/issue38-PrintTNEF-heapoverflow", 0),
         ("poc/issue39-SwapWord-heapoverflow", -6),
         ("poc/issue40-DecompressRTF-heapoverflow", -5),
+        ("poc/issue41-SwapDWord-heapoverflow", -6),
+        ("poc/issue42-TNEFFillMapi-alloc", -6),
+        ("poc/issue45-SIZECHECK-overflow", -6),
         ("poc/issue46-TNEFDateHandler-overrun", -6),
+        ("poc/issue47-TNEFFillMapi-overwrite", -6),
+        ("poc/issue48-TNEFDefaultHandler-overread", -6),
+        ("poc/issue49-SwapDWord-invalid-read", -6),
+        ("poc/issue50-TNEFFillMapi-overflow", -6),
+        ("poc/issue51-TNEFFillMapi-alloc", -6),
+        ("poc/issue52-PrintTNEF-overflow", -6),
+        ("poc/issue65-TNEFFreeMapiProps-segv", -6),
+        ("poc/issue66-TNEFFreeMapiProps-segv", -6),
+        ("poc/issue67-MAPIFindUserProp-segv", -6),
+        ("poc/issue68-TNEFFreeMapiProps-abrt", -6),
+        ("poc/issue69-TNEFFreeMapiProps-oom", -6),
+        ("poc/issue70-TNEFFreeMapiProps-segv", -6),
         ("poc/issue85-TNEFSubjectHandler-doublefree", -3),
+        ("poc/issue85-TNEFSubjectHandler-doublefree-min", 0),
         ("poc/issue86-TNEFVersion-overflow", -6),
         ("poc/issue90-double-free", -3),
-    ] {
-        let e = parse(&fixture(name), &Limits::default()).unwrap_err();
-        assert_eq!(e.code(), code, "{name}: {e}");
+        ("poc/issue92-ProcessTNEF-oob", -6),
+    ];
+    want.sort();
+    let corpus = corpus();
+    assert_eq!(
+        corpus.len(),
+        want.len(),
+        "corpus changed; update this table"
+    );
+    let mut bad = Vec::new();
+    for ((name, buf), (wname, code)) in corpus.iter().zip(want) {
+        assert_eq!(name, wname);
+        let got = match parse(buf, &Limits::default()) {
+            Ok(_) => 0,
+            Err(e) => e.code(),
+        };
+        if got != code {
+            bad.push(format!("{name}: C {code}, Rust {got}"));
+        }
     }
+    assert!(bad.is_empty(), "{bad:#?}");
     assert_eq!(
         parse(&fixture("results/AUTHORS"), &Limits::default()),
         Err(Error::NotTnefStream)
