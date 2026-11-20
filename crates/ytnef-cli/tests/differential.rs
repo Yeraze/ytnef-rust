@@ -82,11 +82,16 @@ fn run(cmd: &mut Command) -> String {
     )
 }
 
-/// `ytnef -f <dir>`: exit code, stdout (dir masked) and the written files.
-fn extract(bin: &Path, fixture: &Path, out: &Path) -> String {
+/// `ytnef <flags> -f <dir>`: exit code, stdout (dir masked) and the name,
+/// size and hash of every file written (dotfiles included).
+fn extract(bin: &Path, flags: &[&str], fixture: &Path, out: &Path) -> String {
     let _ = fs::remove_dir_all(out);
     fs::create_dir_all(out).unwrap();
-    let mut s = run(Command::new(bin).arg("-f").arg(out).arg(fixture));
+    let mut s = run(Command::new(bin)
+        .args(flags)
+        .arg("-f")
+        .arg(out)
+        .arg(fixture));
     s = s.replace(&*out.to_string_lossy(), "OUT");
     let mut files: Vec<_> = fs::read_dir(out)
         .unwrap()
@@ -232,6 +237,18 @@ fn differential() {
     for name in corpus() {
         let path = repo().join("tests/fixtures").join(&name);
         let out = |side: &str| tmp.join(side).join(name.replace('/', "_"));
+        let ytnef = |check: &'static str, flags: &[&str]| {
+            (
+                check,
+                extract(
+                    &oracle.join("ytnef"),
+                    flags,
+                    &path,
+                    &out(&format!("c-{check}")),
+                ),
+                extract(rust_ytnef, flags, &path, &out(&format!("rust-{check}"))),
+            )
+        };
         let results = [
             (
                 "dump",
@@ -248,11 +265,9 @@ fn differential() {
                 run(Command::new(oracle.join("ytnefprint")).arg("-v").arg(&path)),
                 run(Command::new(rust_print).arg("-v").arg(&path)),
             ),
-            (
-                "ytnef",
-                extract(&oracle.join("ytnef"), &path, &out("c")),
-                extract(rust_ytnef, &path, &out("rust")),
-            ),
+            ytnef("ytnef", &[]),
+            ytnef("ytnef-v", &["-v"]),
+            ytnef("ytnef-all", &["-a", "-F", "-H"]),
         ];
         for (check, c, rust) in results {
             checks += 1;
