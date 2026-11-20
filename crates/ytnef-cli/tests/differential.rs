@@ -179,6 +179,13 @@ fn dump(buf: &[u8]) -> String {
     s += &date("modified", t.date_modified);
     s += &date("start", t.date_start);
     s += &date("end", t.date_end);
+    let rtf_tag = ytnef_core::mapi::prop_tag(ytnef_core::mapi::pt::BINARY, 0x1009);
+    if let Some(v) = t.mapi.get(rtf_tag).and_then(|p| p.values.first()) {
+        s += &match ytnef_core::rtf::decompress_rtf(v, &ytnef_core::Limits::default()) {
+            Ok(r) => format!("rtf={}:{:016x}\n", r.len(), fnv(&r)),
+            Err(_) => "rtf=error\n".to_owned(),
+        };
+    }
     let head = std::iter::once(("head".to_owned(), &t.head));
     let rest = t.attachments.iter().enumerate();
     for (name, a) in head.chain(rest.map(|(i, a)| (format!("attachment {i}"), a))) {

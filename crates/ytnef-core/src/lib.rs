@@ -17,10 +17,11 @@ mod error;
 mod limits;
 pub mod mapi;
 mod reader;
+pub mod rtf;
 pub mod tags;
 
 pub use attr::Attribute;
-pub use error::{Error, HandlerError};
+pub use error::{Error, HandlerError, RtfError};
 pub use limits::{Checksum, Limits, Options};
 
 use reader::Reader;

@@ -184,3 +184,47 @@ fn mutated_corpus_never_panics() {
         }
     }
 }
+
+/// `PR_RTF_COMPRESSED` of every fixture that has one, decompressed: `(size,
+/// FNV-1a 64)` from C `DecompressRTF` via tests/oracle/tnefdump.c.
+#[test]
+fn rtf_matches_c() {
+    let want: [(&str, usize, u64); 7] = [
+        ("long-filename.tnef", 1066, 0xaa40be35a94f268c),
+        ("missing-filenames.tnef", 1367, 0xa5a27acd464d2294),
+        ("multi-value-attribute.tnef", 1796, 0x04194dc91598c5b1),
+        ("rtf.tnef", 593, 0x8ddbb7cd9dfc0682),
+        ("winmail.dat", 443, 0x7aad44b627652005),
+        ("poc/issue34-DecompressRTF", 1367, 0x1d03309d36e2ffe6),
+        (
+            "poc/issue38-PrintTNEF-heapoverflow",
+            1367,
+            0xa5a27acd464d2294,
+        ),
+    ];
+    let fnv = |b: &[u8]| {
+        b.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &x| {
+            (h ^ u64::from(x)).wrapping_mul(0x100_0000_01b3)
+        })
+    };
+    let tag = ytnef_core::mapi::prop_tag(ytnef_core::mapi::pt::BINARY, 0x1009);
+    let mut seen = 0;
+    for (name, buf) in corpus() {
+        let Ok(t) = parse(&buf, &Limits::default()) else {
+            continue;
+        };
+        let Some(v) = t.mapi.get(tag).and_then(|p| p.values.first()) else {
+            continue;
+        };
+        let name = name.trim_start_matches('/');
+        let &(_, size, hash) = want
+            .iter()
+            .find(|w| w.0 == name)
+            .unwrap_or_else(|| panic!("{name}: RTF not in table"));
+        let out = ytnef_core::rtf::decompress_rtf(v, &Limits::default())
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!((out.len(), fnv(&out)), (size, hash), "{name}");
+        seen += 1;
+    }
+    assert_eq!(seen, want.len());
+}

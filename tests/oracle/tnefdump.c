@@ -5,9 +5,11 @@
  *
  * Output: "rc=<n>" and, on success, one "key=value" line per field. Byte
  * strings print as "<len>:<escaped>" (printable ASCII kept, rest as \xHH);
- * blobs print as "<len>:<fnv1a-64 hex>".
+ * blobs print as "<len>:<fnv1a-64 hex>". "rtf" is the message's
+ * PR_RTF_COMPRESSED run through DecompressRTF: a blob, or "error".
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -54,6 +56,44 @@ static void date(const char *k, dtr *d) {
          d->wHour, d->wMinute, d->wSecond, d->wDayOfWeek);
 }
 
+static int quiet_fd = -1;
+
+/* libytnef prints diagnostics on stdout; keep them out of the dump */
+static int quiet(int on) {
+  int devnull;
+  fflush(stdout);
+  if (on) {
+    quiet_fd = dup(1);
+    devnull = open("/dev/null", O_WRONLY);
+    if (quiet_fd < 0 || devnull < 0 || dup2(devnull, 1) < 0) return -1;
+    close(devnull);
+    return 0;
+  }
+  devnull = dup2(quiet_fd, 1);
+  close(quiet_fd);
+  return devnull < 0 ? -1 : 0;
+}
+
+static void rtf(MAPIProps *p) {
+  variableLength *v = MAPIFindProperty(p, PROP_TAG(PT_BINARY, PR_RTF_COMPRESSED));
+  variableLength out;
+  int size = 0;
+  BYTE *r;
+  if (v == MAPI_UNDEFINED) return;
+  if (quiet(1) < 0) return;
+  r = DecompressRTF(v, &size);
+  if (quiet(0) < 0) return;
+  if (!r) {
+    printf("rtf=error\n");
+    return;
+  }
+  out.data = r;
+  out.size = size;
+  if (size == 0) printf("rtf=0:%016llx\n", 0xcbf29ce484222325ULL);
+  else blob("rtf", &out);
+  free(r);
+}
+
 static void attach(const char *name, Attachment *a) {
   printf("[%s]\n", name);
   if (a->RenderData.atyp) printf("atyp=%u\n", a->RenderData.atyp);
@@ -67,7 +107,7 @@ static void attach(const char *name, Attachment *a) {
 int main(int argc, char **argv) {
   TNEFStruct t;
   Attachment *a;
-  int rc, n = 0, saved, devnull;
+  int rc, n = 0;
   char name[32];
 
   if (argc != 2) {
@@ -75,14 +115,9 @@ int main(int argc, char **argv) {
     return 2;
   }
   TNEFInitialize(&t);
-  /* libytnef prints diagnostics on stdout; keep them out of the dump */
-  fflush(stdout);
-  saved = dup(1);
-  devnull = open("/dev/null", O_WRONLY);
-  if (saved < 0 || devnull < 0 || dup2(devnull, 1) < 0) return 2;
+  if (quiet(1) < 0) return 2;
   rc = TNEFParseFile(argv[1], &t);
-  fflush(stdout);
-  if (dup2(saved, 1) < 0) return 2;
+  if (quiet(0) < 0) return 2;
   printf("rc=%d\n", rc);
   if (rc == 0) {
     fixed("version", t.version, sizeof t.version);
@@ -100,6 +135,7 @@ int main(int argc, char **argv) {
     date("modified", &t.dateModified);
     date("start", &t.DateStart);
     date("end", &t.DateEnd);
+    rtf(&t.MapiProperties);
     attach("head", &t.starting_attach);
     for (a = t.starting_attach.next; a; a = a->next) {
       snprintf(name, sizeof name, "attachment %d", n++);
