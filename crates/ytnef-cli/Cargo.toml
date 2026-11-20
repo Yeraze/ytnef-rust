@@ -1,11 +1,15 @@
 [package]
 name = "ytnef-cli"
 description = "ytnef and ytnefprint command-line tools (Rust port)"
+keywords = ["tnef", "winmail", "outlook", "email", "cli"]
+categories = ["command-line-utilities", "email"]
+include = ["src/**/*.rs", "man/*.1", "LICENSE", "README.md"]
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+readme.workspace = true
 authors.workspace = true
 
 [[bin]]
@@ -17,8 +21,8 @@ name = "ytnefprint"
 path = "src/bin/ytnefprint.rs"
 
 [dependencies]
-ytnef-core = { path = "../ytnef-core", version = "0.0.0" }
-ytnef-export = { path = "../ytnef-export", version = "0.0.0" }
+ytnef-core.workspace = true
+ytnef-export.workspace = true
 
 [lints]
 workspace = true

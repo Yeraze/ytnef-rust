@@ -1,11 +1,15 @@
 [package]
 name = "ytnef-core"
 description = "TNEF (winmail.dat) parser: safe, bounded, no I/O"
+keywords = ["tnef", "winmail", "outlook", "email", "parser"]
+categories = ["parser-implementations", "email"]
+include = ["src/**/*.rs", "LICENSE", "README.md"]
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+readme.workspace = true
 authors.workspace = true
 
 [lints]

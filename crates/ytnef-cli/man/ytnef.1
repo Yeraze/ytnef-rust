@@ -1,0 +1,96 @@
+.TH YTNEF 1 "" "ytnef-rust" "User Commands"
+.SH NAME
+ytnef \- extract attachments from TNEF (winmail.dat) streams
+.SH SYNOPSIS
+.B ytnef
+.RI [ options ] " file" ...
+.SH DESCRIPTION
+.B ytnef
+decodes Microsoft TNEF streams, the
+.I application/ms-tnef
+attachments usually named
+.I winmail.dat
+that Outlook sends. It can list the contents of a stream and save the
+attachments it contains, converting contacts and calendar entries to vCard
+and vCalendar files.
+.PP
+This is the Rust port of ytnef. Its flags, output and exit status match the
+C tool except where the C tool was unsafe; see
+.BR DIFFERENCES .
+.PP
+Options are read in order, so each one affects only the files named after it.
+A leading
+.B \-
+enables an option and a leading
+.B +
+disables it.
+.SH OPTIONS
+.TP
+.BR \-v ", " +v
+Enable or disable verbose output. Repeat
+.B \-v
+for more detail.
+.TP
+.BI \-f " dir"
+Save attachments to
+.IR dir .
+.B +f
+disables saving.
+.TP
+.BR \-F ", " +F
+Enable or disable saving the message body as an RTF file.
+.TP
+.BR \-H ", " +H
+Enable or disable saving the message body as an HTML file.
+.TP
+.BR \-a ", " +a
+Enable or disable saving intermediate files.
+.TP
+.BI \-s " n"
+Set the largest attachment size to accept, in megabytes (default 50).
+.TP
+.B \-h
+Show a usage summary and exit.
+.SH EXIT STATUS
+0 when every file parsed and every output file was written; non-zero
+otherwise.
+.SH EXAMPLES
+.TP
+.B ytnef \-v winmail.dat
+List the contents of the stream without saving anything.
+.TP
+.B ytnef \-f . winmail.dat
+Save all attachments to the current directory.
+.TP
+.B ytnef \-F \-f . winmail.dat
+Also save the message text as an RTF file.
+.SH DIFFERENCES
+Compared with C ytnef 2.1.x:
+.IP \(bu 2
+Output names are a single path component. As in C,
+.BR / ,
+.B \e
+and space become
+.BR _ ;
+control bytes also become
+.BR _ ,
+leading dots are removed and names are cut to 255 bytes.
+.IP \(bu 2
+Existing files and symlinks are never overwritten or followed. On a name
+clash a counter goes before the extension
+.RB ( x.dat " becomes " x1.dat ).
+.IP \(bu 2
+Embedded TNEF streams nest at most 8 deep (C: 16). An embedded stream that
+fails to parse is saved as a plain attachment.
+.IP \(bu 2
+A failure to write a vCard, vTask or vCalendar file goes to standard error
+and makes the exit status non-zero.
+.IP \(bu 2
+Repeating
+.B \-v
+does not reproduce the C library's internal parser trace.
+.SH SEE ALSO
+.BR ytnefprint (1),
+.BR ytnefprocess (1)
+.SH HOMEPAGE
+https://github.com/Yeraze/ytnef-rust
