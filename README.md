@@ -3,7 +3,8 @@
 Rust port of [ytnef](https://github.com/Yeraze/ytnef): a parser for Microsoft TNEF
 (`winmail.dat`, `application/ms-tnef`) streams, plus the `ytnef` and `ytnefprint` tools.
 
-**Status: pre-alpha / in progress.** Only the workspace scaffold exists. Nothing parses yet.
+**Status: pre-alpha / in progress.** `ytnefprint` and `ytnef` (attachments, RTF/HTML
+bodies) match the C tools on the test corpus; vCard/vCalendar/vTask export is not done yet.
 Use the C ytnef for real work.
 
 ## Why

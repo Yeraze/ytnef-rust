@@ -96,7 +96,7 @@ fn type_label(t: u16) -> String {
 }
 
 /// What C `DecompressRTF` prints when it gives up.
-fn rtf_error(e: &RtfError) -> String {
+pub fn rtf_error(e: &RtfError) -> String {
     match e {
         RtfError::TooShort { .. } => "File too small\n".to_owned(),
         // C compares against the size minus the size field itself
@@ -242,7 +242,7 @@ fn print_prop(out: &mut impl Write, j: usize, p: &Prop) -> io::Result<()> {
 
 /// The subject as C holds it: copied from a MAPI subject property (with
 /// `\`, `/` and NUL replaced by `_`) unless an `attSubject` set it.
-fn subject(t: &Tnef) -> Option<Vec<u8>> {
+pub fn subject(t: &Tnef) -> Option<Vec<u8>> {
     let s = t.subject?;
     let from_attr = t
         .attributes

@@ -6,8 +6,17 @@
 # fixture: path under tests/fixtures, a "dir/" prefix, or "*" for all.
 # A listed pair may differ; anything else must match the C oracle exactly.
 
-# Not implemented yet: drop these as the phases land.
-ytnef       *   # Rust ytnef is a stub until Phase 3 (#6)
+# check also: ytnef-v (-v -f) | ytnef-all (-a -F -H -f)
+
+# ytnef safe writer (#6, fixes Yeraze/ytnef#113): names lose leading dots
+ytnef       regress/path-traversal.tnef   # C writes ".._ESC1" (from "../ESC1"), Rust "_ESC1"
+ytnef-v     regress/path-traversal.tnef   # same
+ytnef-all   regress/path-traversal.tnef   # same
+ytnef-all   rtf.tnef                      # empty subject: C writes hidden ".rtf", Rust "body.rtf"
+# Embedded TNEF depth: Limits::max_nesting is 8, C recurses 16 deep
+ytnef       regress/nested-tnef.tnef      # saves the level-8 stream as x.dat, C the level-16 one
+ytnef-v     regress/nested-tnef.tnef      # 8 "parse memory block" traces, C 16
+ytnef-all   regress/nested-tnef.tnef      # -a: C overwrites x.dat per level, Rust writes x.dat, x1.dat, ...
 
 # MAPI property blocks stay raw until Phase 1b (#3):
 # C fills the subject from PR_SUBJECT when attSubject is absent
@@ -20,5 +29,4 @@ dump        poc/issue34-DecompressRTF                     # MAPI subject: C maps
 # entry and a unit test when its phase lands:
 #   - FILETIME month boundary: C prints the 1st as "last day + 1" of the prior month
 #   - UTF-16 -> UTF-8: overlong / surrogate handling
-#   - attachment filename sanitising (#113 path traversal)
 #   - RTF MELA: uncompressed size not trusted

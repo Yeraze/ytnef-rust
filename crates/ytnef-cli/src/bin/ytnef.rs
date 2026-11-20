@@ -1,6 +1,547 @@
+//! `ytnef`: extract attachments and message bodies from TNEF streams.
+//!
+//! Flags, stdout, stderr, exit status and written files match C `ytnef`,
+//! except where C was unsafe or unbounded:
+//!
+//! - Output names are one path component: C's `/`, `\` and space become `_`
+//!   as in C, control bytes also become `_`, leading dots are stripped, and
+//!   names are cut to 255 bytes. A name left empty falls back to C's
+//!   `file_NNN.dat`.
+//! - Files are created with `create_new`, so an existing file or symlink is
+//!   never overwritten or followed; on a clash the name gets a counter before
+//!   its extension (`x.dat` -> `x1.dat`), the scheme C already uses for
+//!   sticky-note bodies. C overwrites.
+//! - Embedded TNEF recursion stops at `Limits::max_nesting` (default 8; C
+//!   stops at 16). An embedded stream that fails to parse is saved as a plain
+//!   attachment; C processes whatever it parsed before the error.
+//! - vCard, vTask and vCalendar export (contact, task and appointment
+//!   messages) is not implemented yet (#7): ytnef reports it on stderr and
+//!   counts it as a failure instead of writing the file.
+//! - `-v` given more than once does not reproduce C's internal parser trace.
+
+use std::borrow::Cow;
+use std::ffi::{OsStr, OsString};
+use std::fs::{File, OpenOptions};
+use std::io::{self, BufWriter, ErrorKind, Write};
+use std::path::Path;
 use std::process::ExitCode;
 
+use ytnef_cli::parse_reported;
+use ytnef_core::mapi::{prop_tag, pt};
+use ytnef_core::{has_signature, rtf, Limits, Tnef};
+use ytnef_export::print::{rtf_error, subject};
+
+const PR_CONVERSATION_TOPIC: u16 = 0x0070;
+const PR_RTF_COMPRESSED: u16 = 0x1009;
+const PR_BODY_HTML: u16 = 0x1013;
+const PR_ATTACH_DATA_OBJ: u16 = 0x3701;
+/// Attachment name properties, in the order C tries them:
+/// `PR_ATTACH_LONG_FILENAME`, `PR_DISPLAY_NAME`, `PR_ATTACH_MIME_TAG`.
+const NAME_PROPS: [u16; 3] = [0x3707, 0x3001, 0x370C];
+/// C `MAX_FILENAME_SIZE` buffers hold this many bytes.
+const C_NAME_MAX: usize = 1023;
+/// Longest single path component most filesystems accept.
+const NAME_MAX: usize = 255;
+const MIB: usize = 1024 * 1024;
+
+fn help(size_mb: usize) -> String {
+    format!(
+        "Yerase TNEF Exporter v2.1.4
+
+  usage: ytnef [-+vhf] <filenames>
+
+   -/+v - Enables/Disables verbose output
+          Multiple -v's increase the level of output
+   -/+f - Enables/Disables saving of attachments
+   -/+F - Enables/Disables saving of the message body as RTF
+   -/+H - Enables/Disables saving of the message body as HTML
+   -/+a - Enables/Disables saving of intermediate files
+   -s <n> - Override the default Attachment Size ({size_mb} MB)
+   -h   - Displays this help message
+
+Example:
+  ytnef -v winmail.dat
+     Parse with verbose output, don't save
+  ytnef -f . winmail.dat
+     Parse and save all attachments to local directory (.)
+  ytnef -F -f . winmail.dat
+     Parse and save all attachments to local directory (.)
+     Including saving the message text to a RTF file.
+
+Send bug reports to randall.hand@gmail.com
+"
+    )
+}
+
+#[cfg(unix)]
+fn os_bytes(s: &OsStr) -> Cow<'_, [u8]> {
+    use std::os::unix::ffi::OsStrExt;
+    Cow::Borrowed(s.as_bytes())
+}
+
+#[cfg(not(unix))]
+fn os_bytes(s: &OsStr) -> Cow<'_, [u8]> {
+    Cow::Owned(s.to_string_lossy().into_owned().into_bytes())
+}
+
+#[cfg(unix)]
+fn bytes_os(b: &[u8]) -> Cow<'_, OsStr> {
+    use std::os::unix::ffi::OsStrExt;
+    Cow::Borrowed(OsStr::from_bytes(b))
+}
+
+#[cfg(not(unix))]
+fn bytes_os(b: &[u8]) -> Cow<'_, OsStr> {
+    Cow::Owned(OsString::from(String::from_utf8_lossy(b).into_owned()))
+}
+
+/// Bytes up to the first NUL, as C's `%s` reads them.
+fn cstr(b: &[u8]) -> &[u8] {
+    &b[..b.iter().position(|&c| c == 0).unwrap_or(b.len())]
+}
+
+/// C `atoi`: leading whitespace, optional sign, digits; anything else is 0.
+fn atoi(s: &[u8]) -> i64 {
+    let s = s.trim_ascii_start();
+    let (neg, digits) = match s.first() {
+        Some(b'-') => (true, &s[1..]),
+        Some(b'+') => (false, &s[1..]),
+        _ => (false, s),
+    };
+    let n = digits
+        .iter()
+        .take_while(|c| c.is_ascii_digit())
+        .fold(0i64, |n, &c| {
+            n.saturating_mul(10).saturating_add(i64::from(c - b'0'))
+        });
+    if neg {
+        -n
+    } else {
+        n
+    }
+}
+
+/// C `SanitizeFilename` (message bodies): anything but ASCII alphanumerics
+/// and `.` becomes `_`.
+fn sanitize_body_name(name: &[u8]) -> Vec<u8> {
+    name.iter()
+        .map(|&c| {
+            if c.is_ascii_alphanumeric() || c == b'.' {
+                c
+            } else {
+                b'_'
+            }
+        })
+        .collect()
+}
+
+/// C `SanitizeAttachmentName`'s replacements: space, `/` and `\` become `_`.
+fn sanitize_attachment_name(name: &[u8]) -> Vec<u8> {
+    name.iter()
+        .map(|&c| {
+            if matches!(c, b' ' | b'/' | b'\\') {
+                b'_'
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+/// Stricter than C on top of the C sanitisers: no control bytes or
+/// separators, no leading dots (so no `.`, `..` or hidden files), at most
+/// [`NAME_MAX`] bytes. `None` when nothing usable is left.
+fn safe_name(name: &[u8]) -> Option<Vec<u8>> {
+    let start = name.iter().position(|&c| c != b'.')?;
+    let mut v: Vec<u8> = name[start..]
+        .iter()
+        .map(|&c| {
+            if c < 0x20 || c == 0x7f || c == b'/' || c == b'\\' {
+                b'_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    v.truncate(NAME_MAX);
+    Some(v)
+}
+
+/// `name` with `n` inserted before its extension, cut to [`NAME_MAX`] bytes
+/// by shortening the part before the extension.
+fn numbered(name: &[u8], n: u32) -> Vec<u8> {
+    let (stem, ext) = match name.iter().rposition(|&c| c == b'.') {
+        Some(i) if i > 0 && name.len() - i <= 16 => name.split_at(i),
+        _ => (name, &[][..]),
+    };
+    let num = if n == 0 { String::new() } else { n.to_string() };
+    let keep = NAME_MAX.saturating_sub(num.len() + ext.len());
+    let mut v = stem[..stem.len().min(keep)].to_vec();
+    v.extend_from_slice(num.as_bytes());
+    v.extend_from_slice(ext);
+    v
+}
+
+struct Opts {
+    verbose: i64,
+    save_files: bool,
+    save_rtf: bool,
+    save_html: bool,
+    save_intermediate: bool,
+    dir: Option<OsString>,
+    limits: Limits,
+}
+
+impl Opts {
+    fn verbose(&self) -> u32 {
+        u32::try_from(self.verbose).unwrap_or(if self.verbose < 0 { 0 } else { u32::MAX })
+    }
+
+    /// The path C prints for `name`: `<dir>/<name>`, or `name` without `-f`.
+    fn shown(&self, name: &[u8]) -> Vec<u8> {
+        match &self.dir {
+            Some(d) => [&os_bytes(d)[..], b"/", name].concat(),
+            None => name.to_vec(),
+        }
+    }
+
+    /// Create a new file for `name` in the output directory, never
+    /// replacing an existing file or following a symlink. On a clash, try
+    /// `name` with a counter. Returns the file and the name used.
+    fn create(&self, name: &[u8]) -> io::Result<(File, Vec<u8>)> {
+        let dir = Path::new(self.dir.as_deref().unwrap_or(OsStr::new(".")));
+        for n in 0..1000 {
+            let name = numbered(name, n);
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(dir.join(bytes_os(&name)))
+            {
+                Ok(f) => return Ok((f, name)),
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        Err(ErrorKind::AlreadyExists.into())
+    }
+
+    /// Write `data` to a new file for `name` and print its path; on failure
+    /// print C's error to stderr. Returns the failure count.
+    fn save(&self, out: &mut impl Write, name: &[u8], data: &[u8]) -> io::Result<u32> {
+        match self.create(name).and_then(|(mut f, name)| {
+            f.write_all(data)?;
+            Ok(name)
+        }) {
+            Ok(name) => {
+                out.write_all(&self.shown(&name))?;
+                out.write_all(b"\n")?;
+                Ok(0)
+            }
+            Err(_) => {
+                out.flush()?;
+                let shown = self.shown(name);
+                eprintln!(
+                    "ERROR: Error writing {} to disk!",
+                    String::from_utf8_lossy(&shown)
+                );
+                Ok(1)
+            }
+        }
+    }
+
+    /// Decompressed `PR_RTF_COMPRESSED`, printing C's message if it fails.
+    fn rtf_body(&self, out: &mut impl Write, t: &Tnef) -> io::Result<Option<Vec<u8>>> {
+        let Some(v) = first(t, pt::BINARY, PR_RTF_COMPRESSED) else {
+            return Ok(None);
+        };
+        match rtf::decompress_rtf(v, &self.limits) {
+            Ok(r) => Ok(Some(r)),
+            Err(e) => {
+                out.write_all(rtf_error(&e).as_bytes())?;
+                Ok(None)
+            }
+        }
+    }
+
+    /// C `ProcessTNEF`: save the bodies and attachments of `t`, recursing
+    /// into embedded TNEF streams. Returns the failure count.
+    fn process(&self, out: &mut impl Write, t: &Tnef, depth: u8) -> io::Result<u32> {
+        let mut failures = 0;
+        let class = cstr(t.message_class.unwrap_or_default());
+        let class = &class[..class.len().min(49)];
+        let has_subject = t.subject.is_some_and(|s| !s.is_empty());
+
+        // TODO(#7): vCard, vTask and vCalendar export.
+        let appointment = t
+            .mapi
+            .get_named(prop_tag(pt::STRING8, 0x24))
+            .and_then(|p| p.values.first())
+            .is_some_and(|v| cstr(v) == b"IPM.Appointment");
+        let calendar =
+            matches!(class, b"IPM.Microsoft Schedule.MtgReq" | b"IPM.Appointment") || appointment;
+        for (wanted, what) in [
+            (class == b"IPM.Contact", "vCard"),
+            (class == b"IPM.Task", "vTask"),
+            (calendar, "vCalendar"),
+        ] {
+            if wanted {
+                out.flush()?;
+                eprintln!("ytnef: {what} export is not implemented yet (#7)");
+                failures += 1;
+            }
+        }
+
+        if class == b"IPM.Microsoft Mail.Note" && has_subject {
+            let subj = subject(t).unwrap_or_default();
+            if self.save_rtf {
+                if let Some(body) = self.rtf_body(out, t)? {
+                    failures += self.save_body(out, &subj, b".rtf", &body)?;
+                }
+            }
+            if self.save_html {
+                if let Some(body) = first(t, pt::BINARY, PR_BODY_HTML) {
+                    failures += self.save_body(out, &subj, b".html", body)?;
+                }
+            }
+        }
+
+        if class == b"IPM.StickyNote" && self.save_rtf && has_subject {
+            let topic = first(t, pt::STRING8, PR_CONVERSATION_TOPIC)
+                .or_else(|| first(t, pt::UNICODE, PR_CONVERSATION_TOPIC));
+            if let Some(body) = self.rtf_body(out, t)? {
+                if let Some(topic) = topic {
+                    // C copies at most 31 bytes, up to a NUL (so one
+                    // character of a UTF-16 topic)
+                    let base = cstr(topic);
+                    let base = sanitize_body_name(&base[..base.len().min(31)]);
+                    failures += self.save_body(out, &base, b".rtf", &body)?;
+                }
+            }
+        }
+
+        for (i, a) in t.attachments.iter().enumerate() {
+            let Some(data) = a.data.filter(|d| !d.is_empty()) else {
+                continue;
+            };
+            let object = first_of(&a.mapi, pt::OBJECT, PR_ATTACH_DATA_OBJ)
+                .or_else(|| first_of(&a.mapi, pt::BINARY, PR_ATTACH_DATA_OBJ));
+            // an attached object starts with a 16-byte identifier
+            let payload = match object {
+                Some(o) => o.get(16..).unwrap_or_default(),
+                None => data,
+            };
+
+            let mut real = true;
+            if has_signature(payload) && depth < self.limits.max_nesting {
+                if self.verbose >= 1 {
+                    writeln!(
+                        out,
+                        "DEBUG(1/{}): Attempting to parse memory block...\n",
+                        self.verbose
+                    )?;
+                }
+                if let Ok(inner) = parse_reported(out, payload, self.verbose(), &self.limits)? {
+                    failures += self.process(out, &inner, depth + 1)?;
+                    real = false;
+                }
+            }
+
+            if (real || self.save_intermediate) && self.save_files {
+                let name = NAME_PROPS
+                    .iter()
+                    .find_map(|&id| first_of(&a.mapi, pt::STRING8, id))
+                    .or(a.title)
+                    .unwrap_or_default();
+                let name = cstr(name);
+                let name = sanitize_attachment_name(&name[..name.len().min(C_NAME_MAX)]);
+                let name = safe_name(&name)
+                    .unwrap_or_else(|| format!("file_{:03}.dat", i + 1).into_bytes());
+                failures += self.save(out, &name, payload)?;
+            }
+        }
+        Ok(failures)
+    }
+
+    /// Save a message body as `<base><ext>`, named as C does; an empty base
+    /// becomes `body` (C writes a hidden `<ext>` file).
+    fn save_body(
+        &self,
+        out: &mut impl Write,
+        base: &[u8],
+        ext: &[u8],
+        body: &[u8],
+    ) -> io::Result<u32> {
+        let base = sanitize_body_name(&base[..base.len().min(C_NAME_MAX - ext.len())]);
+        let base = safe_name(&base).unwrap_or_else(|| b"body".to_vec());
+        self.save(out, &[&base[..], ext].concat(), body)
+    }
+
+    /// Parse and process one file. Returns the failure count.
+    fn file(&self, out: &mut impl Write, path: &OsStr) -> io::Result<u32> {
+        if self.verbose >= 1 {
+            out.write_all(b"Attempting to parse ")?;
+            out.write_all(&os_bytes(path))?;
+            out.write_all(b"...\n")?;
+        }
+        let parsed = match std::fs::read(path) {
+            Ok(buf) => match parse_reported(out, &buf, self.verbose(), &self.limits)? {
+                Ok(t) => Some(self.process(out, &t, 0)?),
+                Err(_) => None,
+            },
+            Err(_) => None,
+        };
+        Ok(parsed.unwrap_or_else(|| {
+            let _ = out.flush();
+            eprintln!("ERROR processing file");
+            1
+        }))
+    }
+}
+
+/// First value of the non-named property `PROP_TAG(ty, id)` in `t`'s message
+/// properties.
+fn first<'a>(t: &Tnef<'a>, ty: u16, id: u16) -> Option<&'a [u8]> {
+    first_of(&t.mapi, ty, id)
+}
+
+fn first_of<'a>(props: &ytnef_core::mapi::MapiProps<'a>, ty: u16, id: u16) -> Option<&'a [u8]> {
+    props
+        .get(prop_tag(ty, id))
+        .and_then(|p| p.values.first().copied())
+}
+
+/// C returns `-errors` from `main`; the shell sees it modulo 256.
+fn exit(errors: u32) -> ExitCode {
+    ExitCode::from(errors.wrapping_neg() as u8)
+}
+
+fn run(out: &mut impl Write) -> io::Result<ExitCode> {
+    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    if args.is_empty() {
+        write!(out, "You must specify files to parse\n{}", help(50))?;
+        return Ok(exit(1));
+    }
+    let mut o = Opts {
+        verbose: 0,
+        save_files: false,
+        save_rtf: false,
+        save_html: false,
+        save_intermediate: false,
+        dir: None,
+        limits: Limits::default(),
+    };
+    let mut size_mb = 50;
+    let mut errors = 0u32;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        let a = os_bytes(arg);
+        let flag = a.get(1).copied();
+        match a.first() {
+            Some(b'-') => match flag {
+                Some(b'a') => o.save_intermediate = true,
+                Some(b'v') => o.verbose += 1,
+                Some(b'h') => {
+                    out.write_all(help(size_mb).as_bytes())?;
+                    return Ok(ExitCode::SUCCESS);
+                }
+                Some(b'f') => {
+                    let Some(dir) = args.next() else {
+                        out.write_all(b"Option '-f' requires a directory\n")?;
+                        return Ok(exit(1));
+                    };
+                    o.save_files = true;
+                    o.dir = Some(dir.clone());
+                }
+                Some(b's') => {
+                    let Some(n) = args.next() else {
+                        out.write_all(b"Option '-s' requires a size\n")?;
+                        return Ok(exit(1));
+                    };
+                    let n = atoi(&os_bytes(n));
+                    if !(1..=2047).contains(&n) {
+                        out.write_all(b"Option '-s' must be between 1 and 2047\n")?;
+                        return Ok(exit(1));
+                    }
+                    size_mb = n as usize;
+                    o.limits.max_attr_size = size_mb * MIB;
+                }
+                Some(b'F') => o.save_rtf = true,
+                Some(b'H') => o.save_html = true,
+                _ => unknown(out, &a, size_mb)?,
+            },
+            Some(b'+') => match flag {
+                Some(b'a') => o.save_intermediate = false,
+                Some(b'v') => o.verbose -= 1,
+                Some(b'f') => {
+                    o.save_files = false;
+                    o.dir = None;
+                }
+                Some(b'F') => o.save_rtf = false,
+                Some(b'H') => o.save_html = false,
+                _ => unknown(out, &a, size_mb)?,
+            },
+            _ => errors = errors.saturating_add(o.file(out, arg)?),
+        }
+    }
+    Ok(exit(errors))
+}
+
+fn unknown(out: &mut impl Write, arg: &[u8], size_mb: usize) -> io::Result<()> {
+    out.write_all(b"Unknown option '")?;
+    out.write_all(arg)?;
+    out.write_all(b"'\n")?;
+    out.write_all(help(size_mb).as_bytes())
+}
+
 fn main() -> ExitCode {
-    eprintln!("ytnef (Rust port) is pre-alpha: extraction is not implemented yet");
-    ExitCode::FAILURE
+    let mut out = BufWriter::new(io::stdout().lock());
+    let code = run(&mut out).and_then(|c| out.flush().map(|()| c));
+    code.unwrap_or_else(|e| {
+        eprintln!("ytnef: {e}");
+        ExitCode::FAILURE
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn atoi_matches_c() {
+        assert_eq!(atoi(b"12"), 12);
+        assert_eq!(atoi(b"  7mb"), 7);
+        assert_eq!(atoi(b"-3"), -3);
+        assert_eq!(atoi(b"abc"), 0);
+        assert_eq!(atoi(b""), 0);
+    }
+
+    #[test]
+    fn safe_name_is_one_component() {
+        let c = |n: &[u8]| safe_name(&sanitize_attachment_name(n));
+        // C keeps "../x" as ".._x"; leading dots are stripped here
+        assert_eq!(c(b"../x"), Some(b"_x".to_vec()));
+        assert_eq!(c(b"..\\..\\x"), Some(b"_.._x".to_vec()));
+        assert_eq!(c(b"a\x1bb\nc"), Some(b"a_b_c".to_vec()));
+        assert_eq!(c(b".bashrc"), Some(b"bashrc".to_vec()));
+        assert_eq!(c(b".."), None);
+        assert_eq!(c(b""), None);
+        assert_eq!(c(&[b'a'; 300]).map(|v| v.len()), Some(NAME_MAX));
+    }
+
+    #[test]
+    fn numbered_keeps_extension() {
+        assert_eq!(numbered(b"x.dat", 0), b"x.dat");
+        assert_eq!(numbered(b"x.dat", 2), b"x2.dat");
+        assert_eq!(numbered(b"noext", 1), b"noext1");
+        assert_eq!(numbered(b".rc", 1), b".rc1");
+        let long = [&[b'a'; 300][..], b".txt"].concat();
+        let n = numbered(&long, 12);
+        assert_eq!(n.len(), NAME_MAX);
+        assert!(n.ends_with(b"12.txt"));
+    }
+
+    #[test]
+    fn body_names_follow_c() {
+        assert_eq!(sanitize_body_name(b"Re: hi/there.rtf"), b"Re__hi_there.rtf");
+    }
 }
