@@ -34,3 +34,17 @@ jobs:
           toolchain: ${{ matrix.toolchain }}
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
+
+  differential:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y autoconf automake libtool
+      - name: Build C oracle
+        run: scripts/build-oracle.sh
+      - name: Differential test
+        run: cargo test -p ytnef-cli --test differential --locked -- --nocapture
+        env:
+          YTNEF_ORACLE: target/oracle

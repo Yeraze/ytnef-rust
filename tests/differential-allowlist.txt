@@ -1,0 +1,18 @@
+# Known C/Rust differences for crates/ytnef-cli/tests/differential.rs.
+#
+#   <check> <fixture>   # reason
+#
+# check:   ytnefprint | ytnef
+# fixture: path under tests/fixtures, a "dir/" prefix, or "*" for all.
+# A listed pair may differ; anything else must match the C oracle exactly.
+
+# Not implemented yet: drop these as the phases land.
+ytnefprint  *   # Rust ytnefprint is a stub until Phase 2 (#5)
+ytnef       *   # Rust ytnef is a stub until Phase 3 (#6)
+
+# Intentional fixes (research doc §3.3, §5.5). Each gets a fixture-specific
+# entry and a unit test when its phase lands:
+#   - FILETIME month boundary: C prints the 1st as "last day + 1" of the prior month
+#   - UTF-16 -> UTF-8: overlong / surrogate handling
+#   - attachment filename sanitising (#113 path traversal)
+#   - RTF MELA: uncompressed size not trusted
