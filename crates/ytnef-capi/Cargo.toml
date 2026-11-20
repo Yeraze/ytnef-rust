@@ -1,0 +1,43 @@
+[package]
+name = "ytnef-capi"
+description = "Drop-in C ABI for libytnef.so.0, backed by ytnef-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+build = "build.rs"
+
+[lib]
+name = "ytnef"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[features]
+# Marker cargo-c requires; enables nothing.
+capi = []
+
+[dependencies]
+libc = "0.2"
+ytnef-core = { path = "../ytnef-core" }
+
+# cargo-c (`cargo cinstall`): libytnef.so.0 + libytnef.pc + the original headers.
+[package.metadata.capi.library]
+name = "ytnef"
+version_suffix_components = 1
+
+[package.metadata.capi.header]
+generation = false
+subdirectory = false
+
+[package.metadata.capi.pkg_config]
+name = "libytnef"
+filename = "libytnef"
+description = "Yerase's TNEF Stream Reader library"
+
+[package.metadata.capi.install.include]
+asset = [{ from = "include/*.h", to = "" }]
+
+[lints.rust]
+# The one crate allowed `unsafe`: the C ABI cannot be written without it.
+unsafe_code = "allow"

@@ -175,7 +175,7 @@ fn civil_from_days(days: u64) -> (u16, u16, u16) {
 }
 
 /// Parse a whole property block; every byte must be consumed.
-pub(crate) fn parse<'a>(d: &'a [u8], l: &Limits) -> Result<MapiProps<'a>, HandlerError> {
+pub fn parse<'a>(d: &'a [u8], l: &Limits) -> Result<MapiProps<'a>, HandlerError> {
     let mut r = Reader::new(d);
     let n = count(&mut r, l.max_mapi_count, "property count")?;
     let mut props = Vec::new();
