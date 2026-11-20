@@ -1,11 +1,15 @@
 [package]
 name = "ytnef-capi"
 description = "Drop-in C ABI for libytnef.so.0, backed by ytnef-core"
+keywords = ["tnef", "winmail", "libytnef", "ffi", "cargo-c"]
+categories = ["external-ffi-bindings", "email"]
+include = ["src/**/*.rs", "include/*.h", "build.rs", "libytnef0.symbols", "LICENSE", "README.md"]
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+readme.workspace = true
 authors.workspace = true
 build = "build.rs"
 
@@ -19,7 +23,7 @@ capi = []
 
 [dependencies]
 libc = "0.2"
-ytnef-core = { path = "../ytnef-core" }
+ytnef-core.workspace = true
 
 # cargo-c (`cargo cinstall`): libytnef.so.0 + libytnef.pc + the original headers.
 [package.metadata.capi.library]
@@ -34,6 +38,8 @@ subdirectory = false
 name = "libytnef"
 filename = "libytnef"
 description = "Yerase's TNEF Stream Reader library"
+# The C library version this ABI matches, not the crate version.
+version = "2.1.4"
 
 [package.metadata.capi.install.include]
 asset = [{ from = "include/*.h", to = "" }]

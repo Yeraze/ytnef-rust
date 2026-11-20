@@ -65,7 +65,7 @@ checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
 
 [[package]]
 name = "ytnef-capi"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "libc",
  "ytnef-core",
@@ -73,7 +73,7 @@ dependencies = [
 
 [[package]]
 name = "ytnef-cli"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "ytnef-core",
  "ytnef-export",
@@ -81,14 +81,14 @@ dependencies = [
 
 [[package]]
 name = "ytnef-core"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "ytnef-export"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "ytnef-core",
 ]

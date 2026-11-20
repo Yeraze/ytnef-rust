@@ -1,0 +1,47 @@
+.TH YTNEFPRINT 1 "" "ytnef-rust" "User Commands"
+.SH NAME
+ytnefprint \- print the contents of TNEF (winmail.dat) streams
+.SH SYNOPSIS
+.B ytnefprint
+.RI [ options ] " file" ...
+.SH DESCRIPTION
+.B ytnefprint
+parses Microsoft TNEF streams, the
+.I application/ms-tnef
+attachments usually named
+.IR winmail.dat ,
+and prints their message fields, attachments and MAPI properties.
+It never writes files.
+.PP
+This is the Rust port of ytnefprint. Its output matches the C tool byte for
+byte except as noted under
+.BR DIFFERENCES .
+.SH OPTIONS
+.TP
+.B \-v
+Verbose output. Repeat for more detail.
+.TP
+.BI \-s " n"
+Set the largest attachment size to accept, in megabytes (default 50).
+.TP
+.B \-h
+Show a usage summary and exit.
+.SH DIFFERENCES
+Compared with C ytnefprint 2.1.x:
+.IP \(bu 2
+.B \-h
+and
+.B \-s
+work; C ytnefprint ignores
+.B \-h
+and reads the
+.B \-s
+value as a file name.
+.IP \(bu 2
+Repeating
+.B \-v
+does not reproduce the C library's internal parser trace.
+.SH SEE ALSO
+.BR ytnef (1)
+.SH HOMEPAGE
+https://github.com/Yeraze/ytnef-rust

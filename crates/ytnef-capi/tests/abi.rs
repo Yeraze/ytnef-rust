@@ -5,6 +5,7 @@ use std::mem::MaybeUninit;
 use std::path::Path;
 use std::ptr::null_mut;
 use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::{Mutex, MutexGuard};
 use ytnef::*;
 
 fn fixture(name: &str) -> Vec<u8> {
@@ -14,6 +15,13 @@ fn fixture(name: &str) -> Vec<u8> {
             .join(name),
     )
     .unwrap()
+}
+
+/// `installed_handlers_are_called` patches the global `TNEFList`, which every
+/// parse reads, so tests that parse take this lock.
+fn tnef_list_lock() -> MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 fn new_tnef() -> Box<TNEFStruct> {
@@ -42,6 +50,7 @@ fn cstr(a: &[libc::c_char]) -> String {
 
 #[test]
 fn parse_memory_fills_the_c_structs() {
+    let _guard = tnef_list_lock();
     let mut buf = fixture("one-file.tnef");
     let mut t = new_tnef();
     unsafe {
@@ -126,6 +135,7 @@ unsafe extern "C" fn stingy_read(
 
 #[test]
 fn custom_read_proc() {
+    let _guard = tnef_list_lock();
     let data = fixture("winmail.dat");
     let mut reference = new_tnef();
     let mut t = new_tnef();
@@ -153,6 +163,7 @@ fn custom_read_proc() {
 
 #[test]
 fn installed_handlers_are_called() {
+    let _guard = tnef_list_lock();
     static CALLS: AtomicI32 = AtomicI32::new(0);
     unsafe extern "C" fn count(
         _: *mut TNEFStruct,
@@ -184,6 +195,7 @@ fn installed_handlers_are_called() {
 
 #[test]
 fn helpers() {
+    let _guard = tnef_list_lock();
     unsafe {
         let mut b = [0x34, 0x12, 0x78, 0x56, 0, 0, 0, 0];
         assert_eq!(SwapWord(b.as_mut_ptr(), 2), 0x1234);
@@ -247,6 +259,7 @@ fn helpers() {
 
 #[test]
 fn every_fixture_parses_without_panicking() {
+    let _guard = tnef_list_lock();
     fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
         for e in std::fs::read_dir(dir).unwrap() {
             let p = e.unwrap().path();

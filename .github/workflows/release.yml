@@ -1,0 +1,88 @@
+name: Release
+
+# Runs only when a maintainer pushes a version tag (git push origin v0.1.0).
+# Builds binaries and opens a *draft* GitHub release; publishing the draft and
+# `cargo publish` stay manual.
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches workspace version
+        run: |
+          want="v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          test "$GITHUB_REF_NAME" = "$want" || { echo "tag $GITHUB_REF_NAME != $want"; exit 1; }
+
+  build:
+    needs: check-version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
+          - { target: aarch64-apple-darwin, os: macos-latest }
+          - { target: x86_64-apple-darwin, os: macos-latest }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --locked -p ytnef-cli --target ${{ matrix.target }}
+      - name: Package
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          name="ytnef-$GITHUB_REF_NAME-$TARGET"
+          mkdir -p "$name/man/man1"
+          exe=""; [[ "$TARGET" == *windows* ]] && exe=".exe"
+          cp "target/$TARGET/release/ytnef$exe" "target/$TARGET/release/ytnefprint$exe" "$name/"
+          cp crates/ytnef-cli/man/*.1 contrib/ytnefprocess/ytnefprocess.1 "$name/man/man1/"
+          cp contrib/ytnefprocess/ytnefprocess contrib/ytnefprocess/README.ytnefprocess LICENSE README.md CHANGELOG.md "$name/"
+          if [[ -n "$exe" ]]; then
+            7z a -tzip "$name.zip" "$name" >/dev/null
+            sha256sum "$name.zip" > "$name.zip.sha256"
+          else
+            tar czf "$name.tar.gz" "$name"
+            shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            ytnef-*.tar.gz*
+            ytnef-*.zip*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            ytnef-*.tar.gz*
+            ytnef-*.zip*
