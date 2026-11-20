@@ -17,6 +17,9 @@ pub enum Error {
     /// Stream ends inside an attribute payload or checksum.
     #[error("truncated attribute at offset {offset}: needed {needed} more bytes")]
     Truncated { offset: usize, needed: usize },
+    /// Stream ends inside the 2-byte checksum after an attribute payload.
+    #[error("attribute checksum truncated at offset {offset}")]
+    NoChecksum { offset: usize },
     /// An attribute header declares a zero-length payload.
     #[error("attribute 0x{attr:08x} at offset {offset} has size 0")]
     EmptyAttribute { attr: u32, offset: usize },
@@ -55,8 +58,11 @@ pub enum HandlerError {
     #[error("payload length {len} exceeds limit {max}")]
     TooLarge { len: usize, max: usize },
     /// A count or length that C's `PREALLOCCHECK` rejects (0 or above `max`).
-    #[error("value {value} at byte {offset} outside 1..={max}")]
+    #[error("{what} {value} at byte {offset} outside 1..={max}")]
     OutOfRange {
+        /// Which count or length: `"property count"`, `"value count"`,
+        /// `"name count"`, `"name length"` or `"subject length"`.
+        what: &'static str,
         offset: usize,
         value: u32,
         max: usize,
@@ -81,7 +87,10 @@ impl Error {
     pub fn code(&self) -> i32 {
         match self {
             Error::NotTnefStream => -2,
-            Error::NoSignature | Error::Truncated { .. } | Error::EmptyAttribute { .. } => -3,
+            Error::NoSignature
+            | Error::Truncated { .. }
+            | Error::NoChecksum { .. }
+            | Error::EmptyAttribute { .. } => -3,
             Error::NoKey => -4,
             Error::BadChecksum { .. } => -5,
             Error::InHandler { .. } => -6,

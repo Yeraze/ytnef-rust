@@ -98,7 +98,9 @@ pub(crate) fn next<'a>(r: &mut Reader<'a>, opts: &Options) -> Result<Option<Attr
             max,
         })?;
     let data = r.take(size)?;
-    let stored = r.u16()?;
+    let stored = r
+        .u16()
+        .map_err(|t| Error::NoChecksum { offset: t.offset })?;
     let computed = data.iter().fold(0u16, |s, &b| s.wrapping_add(u16::from(b)));
     let checksum_ok = stored == computed;
     if !checksum_ok && opts.checksum == Checksum::Strict {

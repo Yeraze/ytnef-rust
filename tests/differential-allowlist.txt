@@ -2,12 +2,11 @@
 #
 #   <check> <fixture>   # reason
 #
-# check:   dump | ytnefprint | ytnef
+# check:   dump | ytnefprint | ytnefprint-v | ytnef
 # fixture: path under tests/fixtures, a "dir/" prefix, or "*" for all.
 # A listed pair may differ; anything else must match the C oracle exactly.
 
 # Not implemented yet: drop these as the phases land.
-ytnefprint  *   # Rust ytnefprint is a stub until Phase 2 (#5)
 ytnef       *   # Rust ytnef is a stub until Phase 3 (#6)
 
 # MAPI property blocks stay raw until Phase 1b (#3):

@@ -244,6 +244,11 @@ fn differential() {
                 run(Command::new(rust_print).arg(&path)),
             ),
             (
+                "ytnefprint-v",
+                run(Command::new(oracle.join("ytnefprint")).arg("-v").arg(&path)),
+                run(Command::new(rust_print).arg("-v").arg(&path)),
+            ),
+            (
                 "ytnef",
                 extract(&oracle.join("ytnef"), &path, &out("c")),
                 extract(rust_ytnef, &path, &out("rust")),

@@ -177,7 +177,7 @@ fn civil_from_days(days: u64) -> (u16, u16, u16) {
 /// Parse a whole property block; every byte must be consumed.
 pub(crate) fn parse<'a>(d: &'a [u8], l: &Limits) -> Result<MapiProps<'a>, HandlerError> {
     let mut r = Reader::new(d);
-    let n = count(&mut r, l.max_mapi_count)?;
+    let n = count(&mut r, l.max_mapi_count, "property count")?;
     let mut props = Vec::new();
     for _ in 0..n {
         props.push(prop(&mut r, l)?);
@@ -205,6 +205,7 @@ pub(crate) fn fill_subject<'a>(
     if let Some(v) = first {
         if v.is_empty() || v.len() > max {
             return Err(HandlerError::OutOfRange {
+                what: "subject length",
                 offset: 0,
                 value: u32::try_from(v.len()).unwrap_or(u32::MAX),
                 max,
@@ -216,13 +217,14 @@ pub(crate) fn fill_subject<'a>(
 }
 
 /// A u32 that C passes through `PREALLOCCHECK(x, max)`: must be in 1..=max.
-fn count(r: &mut Reader, max: usize) -> Result<usize, HandlerError> {
+fn count(r: &mut Reader, max: usize, what: &'static str) -> Result<usize, HandlerError> {
     let offset = r.pos();
     let v = r.u32()?;
     usize::try_from(v)
         .ok()
         .filter(|n| (1..=max).contains(n))
         .ok_or(HandlerError::OutOfRange {
+            what,
             offset,
             value: v,
             max,
@@ -244,7 +246,7 @@ fn prop<'a>(r: &mut Reader<'a>, l: &Limits) -> Result<Prop<'a>, HandlerError> {
     let ty = tag as u16;
     let multi = ty & MV_FLAG != 0;
     let n = if multi {
-        count(r, l.max_mapi_count)?
+        count(r, l.max_mapi_count, "value count")?
     } else {
         1
     };
@@ -267,6 +269,7 @@ fn name<'a>(r: &mut Reader<'a>, l: &Limits) -> Result<Name<'a>, HandlerError> {
     }
     if usize::try_from(kind).map_or(true, |k| k > l.max_mapi_count) {
         return Err(HandlerError::OutOfRange {
+            what: "name count",
             offset,
             value: kind,
             max: l.max_mapi_count,
@@ -274,7 +277,7 @@ fn name<'a>(r: &mut Reader<'a>, l: &Limits) -> Result<Name<'a>, HandlerError> {
     }
     let mut names = Vec::new();
     for _ in 0..kind {
-        let len = count(r, l.max_mapi_name)?;
+        let len = count(r, l.max_mapi_name, "name length")?;
         names.push(r.take(len)?);
         r.take(pad(len))?;
     }

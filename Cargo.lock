@@ -62,6 +62,7 @@ name = "ytnef-cli"
 version = "0.0.0"
 dependencies = [
  "ytnef-core",
+ "ytnef-export",
 ]
 
 [[package]]
