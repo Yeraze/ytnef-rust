@@ -17,6 +17,7 @@ mod error;
 mod limits;
 pub mod mapi;
 mod reader;
+pub mod tags;
 
 pub use attr::Attribute;
 pub use error::{Error, HandlerError};
@@ -67,7 +68,7 @@ pub struct Attachment<'a> {
     pub create_date: Option<Dtr>,
     pub modify_date: Option<Dtr>,
     /// `attAttachment` MAPI properties; empty when absent.
-    pub mapi: Vec<mapi::Prop<'a>>,
+    pub mapi: mapi::MapiProps<'a>,
 }
 
 /// A parsed TNEF stream. Byte strings are raw (no charset decoding) and
@@ -97,7 +98,7 @@ pub struct Tnef<'a> {
     pub date_start: Option<Dtr>,
     pub date_end: Option<Dtr>,
     /// `attMAPIProps` properties; empty when absent.
-    pub mapi: Vec<mapi::Prop<'a>>,
+    pub mapi: mapi::MapiProps<'a>,
     /// Attachment-level attributes seen before the first `attAttachRenddata`
     /// (C's `starting_attach`).
     pub head: Attachment<'a>,
