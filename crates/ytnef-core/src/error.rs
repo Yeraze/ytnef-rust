@@ -90,3 +90,24 @@ impl Error {
         }
     }
 }
+
+/// Why [`decompress_rtf`](crate::rtf::decompress_rtf) refused a value; each
+/// is a case where C `DecompressRTF` returns NULL.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum RtfError {
+    #[error("{len} bytes is too short for compressed RTF")]
+    TooShort { len: usize },
+    #[error("header size {stored} does not match {len}-byte value")]
+    SizeMismatch { stored: u32, len: usize },
+    /// The raw size cannot be produced from the input.
+    #[error("raw size {raw} impossible for the input")]
+    BadRawSize { raw: u32 },
+    #[error("raw size {len} exceeds limit {max}")]
+    TooLarge { len: usize, max: usize },
+    /// The stream ends inside a literal or reference.
+    #[error("stream truncated at byte {offset}")]
+    Truncated { offset: usize },
+    #[error("unknown compression magic 0x{magic:08x}")]
+    UnknownMagic { magic: u32 },
+}
