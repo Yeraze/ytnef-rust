@@ -6,7 +6,7 @@
 # fixture: path under tests/fixtures, a "dir/" prefix, or "*" for all.
 # A listed pair may differ; anything else must match the C oracle exactly.
 
-# check also: ytnef-v (-v -f) | ytnef-all (-a -F -H -f)
+# check also: ytnef-v (-v -f) | ytnef-all (-a -F -H -f) | ytnef-list (no -f)
 
 # ytnef safe writer (#6, fixes Yeraze/ytnef#113): names lose leading dots
 ytnef       regress/path-traversal.tnef   # C writes ".._ESC1" (from "../ESC1"), Rust "_ESC1"

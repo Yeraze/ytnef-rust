@@ -12,5 +12,9 @@ Copied from [Yeraze/ytnef](https://github.com/Yeraze/ytnef) `test-data/` at comm
 The C unit tests (`test_lib.c`, `test_decompress_rtf.c`) were not copied; their cases
 will be ported as Rust tests.
 - `poc/`: crash reproducers from Yeraze/ytnef issues #34–#92.
+- `export/`: small synthetic contact, task and calendar messages (`IPM.Contact`,
+  `IPM.Task`, `IPM.Appointment`, meeting request / cancel, one per recurrence pattern)
+  for the vCard / VTODO / VEVENT export. All names, addresses and dates are made up.
+  Regenerate with `scripts/gen-export-fixtures.py`; edit the script, not the files.
 
 `MANIFEST.md` lists the origin and license of every file.

@@ -110,6 +110,14 @@ fn extract(bin: &Path, flags: &[&str], fixture: &Path, out: &Path) -> String {
     s
 }
 
+/// `ytnef <fixture>` without `-f`, run in an empty directory: exit code
+/// and stdout. C still prints the names of contact, task and calendar files.
+fn list(bin: &Path, fixture: &Path, dir: &Path) -> String {
+    let _ = fs::remove_dir_all(dir);
+    fs::create_dir_all(dir).unwrap();
+    run(Command::new(bin).arg(fixture).current_dir(dir))
+}
+
 fn esc(k: &str, b: &[u8]) -> String {
     let mut s = format!("{k}={}:", b.len());
     for &c in b {
@@ -171,7 +179,17 @@ fn dump(buf: &[u8]) -> String {
     let mut s = String::from("rc=0\n");
     s += &opt("version", version.as_deref().map(str::as_bytes));
     s += &opt("from", t.from);
-    s += &opt("subject", t.subject);
+    // tnefdump prints the subject as C holds it: an attSubject as stored,
+    // one copied from a MAPI property normalised
+    let from_attr = t
+        .attributes
+        .iter()
+        .any(|a| a.id == ytnef_core::attr::id::SUBJECT);
+    if from_attr {
+        s += &opt("subject", t.subject);
+    } else {
+        s += &opt("subject", ytnef_export::print::subject(&t).as_deref());
+    }
     s += &opt("body", t.body);
     s += &fixed("class", t.message_class, 49);
     s += &fixed("id", t.message_id, 50);
@@ -264,6 +282,11 @@ fn differential() {
                 "ytnefprint-v",
                 run(Command::new(oracle.join("ytnefprint")).arg("-v").arg(&path)),
                 run(Command::new(rust_print).arg("-v").arg(&path)),
+            ),
+            (
+                "ytnef-list",
+                list(&oracle.join("ytnef"), &path, &out("c-list")),
+                list(rust_ytnef, &path, &out("rust-list")),
             ),
             ytnef("ytnef", &[]),
             ytnef("ytnef-v", &["-v"]),

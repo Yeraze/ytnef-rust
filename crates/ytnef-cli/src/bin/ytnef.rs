@@ -14,9 +14,10 @@
 //! - Embedded TNEF recursion stops at `Limits::max_nesting` (default 8; C
 //!   stops at 16). An embedded stream that fails to parse is saved as a plain
 //!   attachment; C processes whatever it parsed before the error.
-//! - vCard, vTask and vCalendar export (contact, task and appointment
-//!   messages) is not implemented yet (#7): ytnef reports it on stderr and
-//!   counts it as a failure instead of writing the file.
+//! - vCard, vTask and vCalendar files go through the same writer, so a
+//!   write error is reported on stderr and counted as a failure (C prints
+//!   `Error writing file to disk!` to stdout and carries on). The file
+//!   contents follow C except where `ytnef_export` documents otherwise.
 //! - `-v` given more than once does not reproduce C's internal parser trace.
 
 use std::borrow::Cow;
@@ -30,6 +31,7 @@ use ytnef_cli::parse_reported;
 use ytnef_core::mapi::{prop_tag, pt};
 use ytnef_core::{has_signature, rtf, Limits, Tnef};
 use ytnef_export::print::{rtf_error, subject};
+use ytnef_export::{vcal, vcard};
 
 const PR_CONVERSATION_TOPIC: u16 = 0x0070;
 const PR_RTF_COMPRESSED: u16 = 0x1009;
@@ -271,24 +273,29 @@ impl Opts {
         let class = &class[..class.len().min(49)];
         let has_subject = t.subject.is_some_and(|s| !s.is_empty());
 
-        // TODO(#7): vCard, vTask and vCalendar export.
+        if class == b"IPM.Contact" {
+            let name = body_name(&vcard::vcard_name(t), b".vcard");
+            failures += self.export(out, &name, || vcard::vcard(t))?;
+        }
+        if class == b"IPM.Task" {
+            if let Some(base) = vcal::vtask_name(t) {
+                let name = body_name(&base, b".vcf");
+                failures += self.export(out, &name, || vcal::vtask(t))?;
+            }
+        }
         let appointment = t
             .mapi
             .get_named(prop_tag(pt::STRING8, 0x24))
             .and_then(|p| p.values.first())
             .is_some_and(|v| cstr(v) == b"IPM.Appointment");
-        let calendar =
-            matches!(class, b"IPM.Microsoft Schedule.MtgReq" | b"IPM.Appointment") || appointment;
-        for (wanted, what) in [
-            (class == b"IPM.Contact", "vCard"),
-            (class == b"IPM.Task", "vTask"),
-            (calendar, "vCalendar"),
-        ] {
-            if wanted {
-                out.flush()?;
-                eprintln!("ytnef: {what} export is not implemented yet (#7)");
-                failures += 1;
-            }
+        let mtg_req = class == b"IPM.Microsoft Schedule.MtgReq";
+        if mtg_req || class == b"IPM.Appointment" || appointment {
+            let name: &[u8] = if mtg_req {
+                b"MtgReq.ics"
+            } else {
+                b"calendar.ics"
+            };
+            failures += self.calendar(out, t, class, name)?;
         }
 
         if class == b"IPM.Microsoft Mail.Note" && has_subject {
@@ -362,8 +369,7 @@ impl Opts {
         Ok(failures)
     }
 
-    /// Save a message body as `<base><ext>`, named as C does; an empty base
-    /// becomes `body` (C writes a hidden `<ext>` file).
+    /// Save a message body as `<base><ext>`, named by [`body_name`].
     fn save_body(
         &self,
         out: &mut impl Write,
@@ -371,9 +377,51 @@ impl Opts {
         ext: &[u8],
         body: &[u8],
     ) -> io::Result<u32> {
-        let base = sanitize_body_name(&base[..base.len().min(C_NAME_MAX - ext.len())]);
-        let base = safe_name(&base).unwrap_or_else(|| b"body".to_vec());
-        self.save(out, &[&base[..], ext].concat(), body)
+        self.save(out, &body_name(base, ext), body)
+    }
+
+    /// C `SaveVCard` / `SaveVTask`: print the file name, and with `-f`
+    /// write the file. Returns the failure count.
+    fn export(
+        &self,
+        out: &mut impl Write,
+        name: &[u8],
+        data: impl FnOnce() -> Vec<u8>,
+    ) -> io::Result<u32> {
+        if self.save_files {
+            return self.save(out, name, &data());
+        }
+        out.write_all(name)?;
+        out.write_all(b"\n")?;
+        Ok(0)
+    }
+
+    /// C `SaveVCalendar`: like [`Opts::export`], but the name gets a counter
+    /// when the file exists (also without `-f`, where C checks the current
+    /// directory), and an RTF description that fails to decompress prints
+    /// its error after the name.
+    fn calendar(
+        &self,
+        out: &mut impl Write,
+        t: &Tnef,
+        class: &[u8],
+        name: &[u8],
+    ) -> io::Result<u32> {
+        if !self.save_files {
+            let name = (0..1000)
+                .map(|n| numbered(name, n))
+                .find(|n| !Path::new(&*bytes_os(n)).exists())
+                .unwrap_or_else(|| name.to_vec());
+            out.write_all(&name)?;
+            out.write_all(b"\n")?;
+            return Ok(0);
+        }
+        let (data, err) = vcal::vcalendar(t, class, &self.limits);
+        let failures = self.save(out, name, &data)?;
+        if let Some(e) = err {
+            out.write_all(rtf_error(&e).as_bytes())?;
+        }
+        Ok(failures)
     }
 
     /// Parse and process one file. Returns the failure count.
@@ -396,6 +444,16 @@ impl Opts {
             1
         }))
     }
+}
+
+/// The file name C gives a body or export: `<base><ext>` after
+/// `SanitizeFilename`, cut to [`NAME_MAX`] bytes by shortening `base`. An
+/// empty base becomes `body` (C writes a hidden `<ext>` file).
+fn body_name(base: &[u8], ext: &[u8]) -> Vec<u8> {
+    let base = sanitize_body_name(&base[..base.len().min(C_NAME_MAX - ext.len())]);
+    let mut base = safe_name(&base).unwrap_or_else(|| b"body".to_vec());
+    base.truncate(NAME_MAX - ext.len());
+    [&base[..], ext].concat()
 }
 
 /// First value of the non-named property `PROP_TAG(ty, id)` in `t`'s message

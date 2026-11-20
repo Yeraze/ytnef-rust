@@ -10,7 +10,7 @@ use ytnef_core::mapi::{self, pt, MapiProps, NameKind, Prop};
 use ytnef_core::{rtf, Dtr, Limits, RtfError, Tnef};
 
 /// `%s` of a byte string: everything before the first NUL.
-fn cstr(b: &[u8]) -> &[u8] {
+pub(crate) fn cstr(b: &[u8]) -> &[u8] {
     &b[..b.iter().position(|&c| c == 0).unwrap_or(b.len())]
 }
 
@@ -251,6 +251,13 @@ pub fn subject(t: &Tnef) -> Option<Vec<u8>> {
     Some(if from_attr {
         cstr(s).to_vec()
     } else {
+        // the property the parser took the subject from
+        let unicode = std::iter::once(&t.mapi)
+            .chain(t.attachments.iter().map(|a| &a.mapi))
+            .flat_map(|m| m.iter())
+            .find(|p| p.values.first().is_some_and(|v| std::ptr::eq(*v, s)))
+            .is_some_and(|p| p.prop_type() == pt::UNICODE);
+        let s = if unicode { c_utf8(s) } else { s.to_vec() };
         s.iter()
             .map(|&c| {
                 if matches!(c, b'\\' | b'/' | 0) {
@@ -261,6 +268,19 @@ pub fn subject(t: &Tnef) -> Option<Vec<u8>> {
             })
             .collect()
     })
+}
+
+/// A `PT_UNICODE` value as C stores it: the whole value converted to UTF-8,
+/// NULs included, then cut or zero-filled to the UTF-16 byte length, which
+/// C keeps as the size.
+fn c_utf8(v: &[u8]) -> Vec<u8> {
+    let units = v.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]]));
+    let mut s = char::decode_utf16(units)
+        .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
+        .collect::<String>()
+        .into_bytes();
+    s.resize(v.len(), 0);
+    s
 }
 
 fn line(out: &mut impl Write, label: &str, v: &[u8]) -> io::Result<()> {
@@ -435,6 +455,14 @@ mod tests {
             ..d
         };
         assert_eq!(date(odd), "17, 2003 3:23:00 pm");
+    }
+
+    #[test]
+    fn unicode_subject_like_c() {
+        // whole value converted, then cut or zero-filled to its UTF-16 length
+        assert_eq!(c_utf8(b"A\0b\0\0\0"), b"Ab\0\0\0\0");
+        assert_eq!(c_utf8(b"\xe9\0\xe9\0"), b"\xc3\xa9\xc3\xa9");
+        assert_eq!(c_utf8(b"\x00\x20"), b"\xe2\x80");
     }
 
     #[test]
