@@ -190,3 +190,40 @@ fn arguments() {
     assert_eq!(o.status.code(), Some(254));
     assert!(o.stdout.is_empty());
 }
+
+/// Contact, task and calendar messages become `.vcard`, `.vcf` and `.ics`
+/// files; without `-f` only their names are printed.
+#[test]
+fn exports() {
+    let out = scratch("exports");
+    for f in ["contact", "task", "appointment", "mtgreq"] {
+        let o = extract(&out, &format!("export/{f}.tnef"));
+        assert_eq!(o.status.code(), Some(0), "{f}");
+    }
+    assert_eq!(
+        names(&out),
+        [
+            "Ada_Lovelace.vcard",
+            "MtgReq.ics",
+            "Write_report_.vcf",
+            "calendar.ics"
+        ]
+    );
+    let read = |n: &str| String::from_utf8(fs::read(out.join(n)).unwrap()).unwrap();
+    assert!(read("Ada_Lovelace.vcard").contains("\nFN:Ada Lovelace\nNICKNAME:Ada\n"));
+    assert!(read("Write_report_.vcf").contains("\nSUMMARY:Write report\\, final\\; v2\n"));
+    assert!(read("calendar.ics")
+        .contains("\nRRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE,FR;COUNT=10\nEND:VEVENT\n"));
+    // RTF without \pard: C leaves DESCRIPTION: empty and unterminated
+    assert!(read("MtgReq.ics").contains("\nDESCRIPTION:LOCATION: Caf\u{e9} B\n"));
+
+    let cwd = scratch("exports-list");
+    let o = Command::new(env!("CARGO_BIN_EXE_ytnef"))
+        .arg(fixtures().join("export/appointment.tnef"))
+        .arg(fixtures().join("export/task-no-topic.tnef"))
+        .current_dir(&cwd)
+        .output()
+        .unwrap();
+    assert_eq!(o.stdout, b"calendar.ics\n");
+    assert!(names(&cwd).is_empty());
+}
