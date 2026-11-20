@@ -6,7 +6,7 @@
 
 use crate::error::HandlerError;
 use crate::limits::Limits;
-use crate::reader::Reader;
+use crate::reader::{Reader, Truncated};
 
 /// Multi-value bit in a property type.
 pub const MV_FLAG: u16 = 0x1000;
@@ -179,13 +179,35 @@ pub(crate) fn parse<'a>(d: &'a [u8], l: &Limits) -> Result<MapiProps<'a>, Handle
     let mut r = Reader::new(d);
     let n = count(&mut r, l.max_mapi_count, "property count")?;
     let mut props = Vec::new();
+    let mut extra = 0;
     for _ in 0..n {
-        props.push(prop(&mut r, l)?);
+        props.push(prop(&mut r, l, &mut extra)?);
+    }
+    if extra > 0 {
+        return Err(HandlerError::Overrun { extra });
     }
     if !r.is_empty() {
         return Err(HandlerError::TrailingBytes { len: r.remaining() });
     }
     Ok(MapiProps(props))
+}
+
+/// Tag a failed read with the field it was for.
+fn at(what: &'static str) -> impl Fn(Truncated) -> HandlerError {
+    move |t| HandlerError::MapiTruncated {
+        what,
+        offset: t.offset,
+        needed: t.needed,
+    }
+}
+
+/// Skip `n` bytes C steps over without a bounds check. Past the end, the
+/// reader stops there (so the next read fails, as C's next `SIZECHECK`
+/// does) and the overshoot is added to `extra`.
+fn skip(r: &mut Reader, n: usize, extra: &mut usize) {
+    let k = n.min(r.remaining());
+    let _ = r.take(k);
+    *extra = extra.saturating_add(n.saturating_sub(k));
 }
 
 /// C fills an empty subject from the first subject-like value, failing
@@ -219,7 +241,7 @@ pub(crate) fn fill_subject<'a>(
 /// A u32 that C passes through `PREALLOCCHECK(x, max)`: must be in 1..=max.
 fn count(r: &mut Reader, max: usize, what: &'static str) -> Result<usize, HandlerError> {
     let offset = r.pos();
-    let v = r.u32()?;
+    let v = r.u32().map_err(at(what))?;
     usize::try_from(v)
         .ok()
         .filter(|n| (1..=max).contains(n))
@@ -236,10 +258,10 @@ fn pad(len: usize) -> usize {
     len.wrapping_neg() & 3
 }
 
-fn prop<'a>(r: &mut Reader<'a>, l: &Limits) -> Result<Prop<'a>, HandlerError> {
-    let tag = r.u32()?;
+fn prop<'a>(r: &mut Reader<'a>, l: &Limits, extra: &mut usize) -> Result<Prop<'a>, HandlerError> {
+    let tag = r.u32().map_err(at("property tag"))?;
     let name = if tag >> 16 >= 0x8000 {
-        Some(name(r, l)?)
+        Some(name(r, l, extra)?)
     } else {
         None
     };
@@ -252,19 +274,19 @@ fn prop<'a>(r: &mut Reader<'a>, l: &Limits) -> Result<Prop<'a>, HandlerError> {
     };
     let mut values = Vec::new();
     for _ in 0..n {
-        values.push(value(r, ty & !MV_FLAG, multi, l)?);
+        values.push(value(r, ty & !MV_FLAG, multi, l, extra)?);
     }
     Ok(Prop { tag, name, values })
 }
 
-fn name<'a>(r: &mut Reader<'a>, l: &Limits) -> Result<Name<'a>, HandlerError> {
-    let guid = r.array::<16>()?;
+fn name<'a>(r: &mut Reader<'a>, l: &Limits, extra: &mut usize) -> Result<Name<'a>, HandlerError> {
+    let guid = r.array::<16>().map_err(at("name guid"))?;
     let offset = r.pos();
-    let kind = r.u32()?;
+    let kind = r.u32().map_err(at("name count"))?;
     if kind == 0 {
         return Ok(Name {
             guid,
-            kind: NameKind::Id(r.u32()?),
+            kind: NameKind::Id(r.u32().map_err(at("name id"))?),
         });
     }
     if usize::try_from(kind).map_or(true, |k| k > l.max_mapi_count) {
@@ -278,8 +300,8 @@ fn name<'a>(r: &mut Reader<'a>, l: &Limits) -> Result<Name<'a>, HandlerError> {
     let mut names = Vec::new();
     for _ in 0..kind {
         let len = count(r, l.max_mapi_name, "name length")?;
-        names.push(r.take(len)?);
-        r.take(pad(len))?;
+        names.push(r.take(len).map_err(at("name"))?);
+        skip(r, pad(len), extra);
     }
     Ok(Name {
         guid,
@@ -292,33 +314,36 @@ fn value<'a>(
     ty: u16,
     multi: bool,
     l: &Limits,
+    extra: &mut usize,
 ) -> Result<&'a [u8], HandlerError> {
     let offset = r.pos();
     let v = match ty {
         pt::BINARY | pt::OBJECT | pt::STRING8 | pt::UNICODE => {
             if !multi {
                 // value count; C assumes 1 and skips it
-                r.u32()?;
+                r.u32().map_err(at("value count"))?;
             }
-            let len = usize::try_from(r.u32()?).unwrap_or(usize::MAX);
-            let v = r.take(len)?;
+            let len = usize::try_from(r.u32().map_err(at("value length"))?).unwrap_or(usize::MAX);
+            let v = r.take(len).map_err(at("value"))?;
             if len > l.max_mapi_value {
                 return Err(HandlerError::TooLarge {
                     len,
                     max: l.max_mapi_value,
                 });
             }
-            r.take(pad(len))?;
+            skip(r, pad(len), extra);
             v
         }
         pt::I2 => {
-            let v = r.take(2)?;
-            r.take(2)?;
+            let v = r.take(2).map_err(at("PT_I2 value"))?;
+            skip(r, 2, extra);
             v
         }
-        pt::BOOLEAN | pt::LONG | pt::R4 | pt::CURRENCY | pt::APPTIME | pt::ERROR => r.take(4)?,
-        pt::DOUBLE | pt::I8 | pt::SYSTIME => r.take(8)?,
-        pt::CLSID => r.take(16)?,
+        pt::BOOLEAN | pt::LONG | pt::R4 | pt::CURRENCY | pt::APPTIME | pt::ERROR => {
+            r.take(4).map_err(at("32-bit value"))?
+        }
+        pt::DOUBLE | pt::I8 | pt::SYSTIME => r.take(8).map_err(at("64-bit value"))?,
+        pt::CLSID => r.take(16).map_err(at("PT_CLSID value"))?,
         _ => {
             return Err(HandlerError::BadPropType {
                 offset,
@@ -384,7 +409,7 @@ mod tests {
             assert_eq!(got.values, vec![&data[..]], "type {ty:#x}");
             // one byte short
             let d = block(&[p[..p.len() - 1].to_vec()]);
-            assert!(matches!(one(&d), Err(HandlerError::Truncated { .. })));
+            assert!(matches!(one(&d), Err(HandlerError::MapiTruncated { .. })));
         }
     }
 
@@ -392,10 +417,69 @@ mod tests {
     fn i2_reads_two_skips_four() {
         let d = block(&[le(&[tag(1, pt::I2), 0xFFFF_0007])]);
         assert_eq!(one(&d).unwrap().values, vec![&[7, 0][..]]);
-        // padding must be there
+        // C skips the unused half unchecked, then rejects the overrun
         let mut short = d.clone();
         short.truncate(d.len() - 2);
-        assert!(matches!(one(&short), Err(HandlerError::Truncated { .. })));
+        assert_eq!(one(&short), Err(HandlerError::Overrun { extra: 2 }));
+        // a missing value fails at its own read
+        short.truncate(d.len() - 4);
+        assert_eq!(
+            one(&short),
+            Err(HandlerError::MapiTruncated {
+                what: "PT_I2 value",
+                offset: 8,
+                needed: 2
+            })
+        );
+    }
+
+    #[test]
+    fn truncation_names_the_field() {
+        let what = |d: &[u8]| match parse(d, &Limits::default()) {
+            Err(HandlerError::MapiTruncated { what, .. }) => what,
+            _ => "not a MAPI truncation",
+        };
+        assert_eq!(what(&[1, 0]), "property count");
+        assert_eq!(what(&le(&[1])), "property tag");
+        assert_eq!(what(&le(&[1, tag(1, pt::LONG | MV_FLAG)])), "value count");
+        assert_eq!(what(&le(&[1, tag(1, pt::STRING8)])), "value count");
+        assert_eq!(what(&le(&[1, tag(1, pt::STRING8), 1])), "value length");
+        assert_eq!(what(&le(&[1, tag(1, pt::STRING8), 1, 5])), "value");
+        assert_eq!(what(&le(&[1, tag(1, pt::LONG)])), "32-bit value");
+        assert_eq!(what(&le(&[1, tag(1, pt::SYSTIME), 0])), "64-bit value");
+        assert_eq!(what(&le(&[1, tag(1, pt::CLSID)])), "PT_CLSID value");
+        let named = |rest: &[u32]| {
+            let mut d = le(&[1, tag(0x8001, pt::LONG), 0, 0, 0, 0]);
+            d.extend(le(rest));
+            d
+        };
+        assert_eq!(what(&le(&[1, tag(0x8001, pt::LONG), 0])), "name guid");
+        assert_eq!(what(&named(&[])), "name count");
+        assert_eq!(what(&named(&[0])), "name id");
+        assert_eq!(what(&named(&[1])), "name length");
+        assert_eq!(what(&named(&[1, 8, 0])), "name");
+    }
+
+    #[test]
+    fn padding_overrun_is_not_a_truncation() {
+        // a 1-byte string whose padding is missing: C reads past the block
+        let d = le(&[1, tag(1, pt::STRING8), 1, 1]);
+        let mut d = d;
+        d.push(b'x');
+        assert_eq!(
+            parse(&d, &Limits::default()),
+            Err(HandlerError::Overrun { extra: 3 })
+        );
+        // ... and a following property then fails at its tag
+        let mut two = le(&[2, tag(1, pt::STRING8), 1, 1]);
+        two.push(b'x');
+        assert!(matches!(
+            parse(&two, &Limits::default()),
+            Err(HandlerError::MapiTruncated {
+                what: "property tag",
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -495,7 +579,10 @@ mod tests {
         p.extend([0; 15]);
         assert!(matches!(
             one(&block(&[p])),
-            Err(HandlerError::Truncated { .. })
+            Err(HandlerError::MapiTruncated {
+                what: "name guid",
+                ..
+            })
         ));
     }
 
@@ -516,7 +603,7 @@ mod tests {
         // empty, zero count, over count limit
         assert!(matches!(
             parse(&[], &l),
-            Err(HandlerError::Truncated { .. })
+            Err(HandlerError::MapiTruncated { .. })
         ));
         for n in [0, 1001, u32::MAX] {
             assert!(matches!(
@@ -541,7 +628,7 @@ mod tests {
         // huge string length: truncation, not an allocation
         assert!(matches!(
             parse(&le(&[1, tag(1, pt::BINARY), 1, u32::MAX]), &l),
-            Err(HandlerError::Truncated { .. })
+            Err(HandlerError::MapiTruncated { what: "value", .. })
         ));
     }
 

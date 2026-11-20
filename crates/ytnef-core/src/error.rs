@@ -71,6 +71,21 @@ pub enum HandlerError {
     BadPropType { offset: usize, prop_type: u16 },
     #[error("{len} bytes left after the last MAPI property")]
     TrailingBytes { len: usize },
+    /// A MAPI read past the end of the block. `what` names the field, as
+    /// C's `SIZECHECK` line does: `"property count"`, `"property tag"`,
+    /// `"name guid"`, `"name count"`, `"name length"`, `"name"`, `"name id"`,
+    /// `"value count"`, `"value length"`, `"value"` (a variable-length one),
+    /// `"PT_I2 value"`, `"32-bit value"`, `"64-bit value"` or `"PT_CLSID value"`.
+    #[error("MAPI {what} truncated at byte {offset} (needed {needed})")]
+    MapiTruncated {
+        what: &'static str,
+        offset: usize,
+        needed: usize,
+    },
+    /// Padding (or the unused half of a `PT_I2`) after the last value runs
+    /// past the block. C skips it unchecked and then rejects the block.
+    #[error("last MAPI value runs {extra} bytes past the block")]
+    Overrun { extra: usize },
 }
 
 impl From<Truncated> for HandlerError {

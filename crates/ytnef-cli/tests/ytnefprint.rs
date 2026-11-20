@@ -70,6 +70,48 @@ fn c_test_sh_checks() {
     }
 }
 
+/// Fuzz-found divergences from C, fixed: the C output for each.
+#[test]
+fn fuzz_regressions() {
+    let verbose = |f: &str| {
+        let o = ytnefprint(&["-v"], Some(&format!("fuzz/{f}")));
+        assert_eq!(o.status.code(), Some(0));
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    for (f, want) in [
+        // the SIZECHECK that failed, not always the value's
+        (
+            "mapi-no-count.tnef",
+            "ytnef.c : 468\nERROR Parsing MAPI block\n",
+        ),
+        ("mapi-no-tag.tnef", "ytnef.c : 480\n"),
+        ("sent-for-truncated.tnef", "ytnef.c : 706\n"),
+        // padding is skipped unchecked, so the block overruns
+        (
+            "mapi-padding-overrun.tnef",
+            "ERROR DURING MAPI READ\nRead 20 bytes, Expected 17 bytes\n3 bytes extra\n",
+        ),
+        // attributes before a truncated one are still traced
+        (
+            "truncated-after-attrs.tnef",
+            "Request Response: [2] \u{1}\nMessage Status: [1] !\nERROR: Error reading data\n",
+        ),
+    ] {
+        let out = verbose(f);
+        assert!(out.contains(want), "{f}: {out}");
+    }
+    let out = verbose("attr-size-limit-after-attrs.tnef");
+    assert!(
+        out.contains(
+            "Message Status: [1] !\nERROR: invalid alloc size 1627389973 at ytnef.c : 1240"
+        ),
+        "{out}"
+    );
+    // allowlisted: C reads attRenddata flags from the wrong offset
+    let out = stdout("fuzz/renddata-mac-binary.tnef");
+    assert!(out.contains("     MAC Binary Encoding\n"), "{out}");
+}
+
 /// Every fixture, PoC crashers included, exits 0 with no panic, as C does.
 #[test]
 fn every_fixture_exits_cleanly() {

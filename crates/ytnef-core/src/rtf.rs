@@ -70,21 +70,31 @@ pub fn decompress_rtf(d: &[u8], limits: &Limits) -> Result<Vec<u8>, RtfError> {
         return Err(RtfError::SizeMismatch { stored, len: size });
     }
     let raw_len = usize::try_from(raw).map_err(|_| RtfError::BadRawSize { raw })?;
-    if raw_len > limits.max_rtf_out {
-        return Err(RtfError::TooLarge {
-            len: raw_len,
-            max: limits.max_rtf_out,
-        });
-    }
+    // C's checks come first, so a stream C rejects gets C's message; the
+    // output cap is Rust-only
+    let capped = |len: usize| {
+        if len > limits.max_rtf_out {
+            Err(RtfError::TooLarge {
+                len,
+                max: limits.max_rtf_out,
+            })
+        } else {
+            Ok(())
+        }
+    };
     match magic {
-        MAGIC_UNCOMPRESSED => body
-            .get(..raw_len)
-            .map(<[u8]>::to_vec)
-            .ok_or(RtfError::BadRawSize { raw }),
+        MAGIC_UNCOMPRESSED => {
+            let v = body.get(..raw_len).ok_or(RtfError::BadRawSize { raw })?;
+            capped(raw_len)?;
+            Ok(v.to_vec())
+        }
         // 17 input bytes (a flag byte and 8 references) give at most 136
         // output bytes, so C refuses a raw size above 8 times the input.
         MAGIC_COMPRESSED if raw_len / 8 > size => Err(RtfError::BadRawSize { raw }),
-        MAGIC_COMPRESSED => lzfu(body, raw_len),
+        MAGIC_COMPRESSED => {
+            capped(raw_len)?;
+            lzfu(body, raw_len)
+        }
         _ => Err(RtfError::UnknownMagic { magic }),
     }
 }
@@ -292,6 +302,19 @@ mod tests {
         assert_eq!(
             decompress_rtf(&stream(c, 3, b"\0abcd"), &tight),
             Err(RtfError::TooLarge { len: 3, max: 2 })
+        );
+        // C's own checks win over the output cap (fuzz-found divergence)
+        assert_eq!(
+            decompress_rtf(&stream(0x1234_5678, 3, b"abcd"), &tight),
+            Err(RtfError::UnknownMagic { magic: 0x1234_5678 })
+        );
+        assert_eq!(
+            decompress_rtf(&stream(c, 200, b"\0abcd"), &tight),
+            Err(RtfError::BadRawSize { raw: 200 })
+        );
+        assert_eq!(
+            decompress_rtf(&stream(MAGIC_UNCOMPRESSED, 9, b"abcd"), &tight),
+            Err(RtfError::BadRawSize { raw: 9 })
         );
     }
 

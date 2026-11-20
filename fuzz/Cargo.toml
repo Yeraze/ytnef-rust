@@ -10,6 +10,8 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 ytnef-core = { path = "../crates/ytnef-core" }
+ytnef-export = { path = "../crates/ytnef-export" }
+ytnef-cli = { path = "../crates/ytnef-cli" }
 
 # Not part of the main workspace: needs nightly (`cargo +nightly fuzz run <target>`).
 [workspace]
@@ -17,6 +19,34 @@ ytnef-core = { path = "../crates/ytnef-core" }
 [[bin]]
 name = "decompress_rtf"
 path = "fuzz_targets/decompress_rtf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse"
+path = "fuzz_targets/parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mapi"
+path = "fuzz_targets/mapi.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "recurrence"
+path = "fuzz_targets/recurrence.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cli_process"
+path = "fuzz_targets/cli_process.rs"
 test = false
 doc = false
 bench = false
