@@ -1,2 +1,4 @@
-//! vCard / VTODO / VEVENT / MAPI-dump formatters. Pre-alpha: empty until Phase 2–3.
+//! vCard / VTODO / VEVENT / MAPI-dump formatters.
 #![forbid(unsafe_code)]
+
+pub mod print;

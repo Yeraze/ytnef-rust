@@ -100,7 +100,9 @@ fn attribute_framing_errors() {
 
     let mut no_sum = msg(id::BODY, b"hello");
     no_sum.pop();
-    assert_eq!(err(&[no_sum]).code(), -3);
+    let e = err(&[no_sum]);
+    assert!(matches!(e, Error::NoChecksum { offset: 20 }));
+    assert_eq!(e.code(), -3);
 
     let huge = [msg(id::ATTACH_DATA, &[0; 64])];
     let l = Limits {

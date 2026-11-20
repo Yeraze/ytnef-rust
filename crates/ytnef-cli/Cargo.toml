@@ -18,6 +18,7 @@ path = "src/bin/ytnefprint.rs"
 
 [dependencies]
 ytnef-core = { path = "../ytnef-core", version = "0.0.0" }
+ytnef-export = { path = "../ytnef-export", version = "0.0.0" }
 
 [lints]
 workspace = true
