@@ -22,7 +22,7 @@ input, and several are fuzzer-mutated copies of the ytnef `test-data/` samples.
 | `results/*` | ytnef@b976ad9 `test-data/results/` (expected `ytnef -f` output) | GPL-2.0-or-later |
 | `test.sh` | ytnef@b976ad9 `test-data/test.sh` | GPL-2.0-or-later |
 | `export/*.tnef` (16 files) | synthetic, written by `scripts/gen-export-fixtures.py` | GPL-2.0-or-later |
-| `fuzz/*.tnef` (9 files) | cargo-fuzz `parse` corpus (mutated fixtures above) and one hand-built block, each a fixed or allowlisted C divergence (#8) | GPL-2.0-or-later |
+| `fuzz/*.tnef` (12 files) | cargo-fuzz `parse` corpus (mutated fixtures above) and one hand-built block, each a fixed or allowlisted C divergence (#8) | GPL-2.0-or-later |
 | `poc/issue34-DecompressRTF` | [ytnef#34](https://github.com/Yeraze/ytnef/issues/34) attachment `ytnef-DecompressRTF.zip` | none stated |
 | `poc/issue37-MAPIPrint-nullptr` | [ytnef#37](https://github.com/Yeraze/ytnef/issues/37), [asarubbo/poc 00241](https://github.com/asarubbo/poc/blob/master/00241-ytnef-nullptr-MAPIPrint) | none stated |
 | `poc/issue38-PrintTNEF-heapoverflow` | [ytnef#38](https://github.com/Yeraze/ytnef/issues/38), asarubbo/poc 00242 | none stated |

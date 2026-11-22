@@ -81,3 +81,9 @@ jobs:
         env:
           YTNEF_ORACLE: target/oracle-asan
           YTNEF_DIFF_CORPUS: fuzz/corpus/parse
+      - name: Upload parse corpus for repro
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: differential-corpus-parse
+          path: fuzz/corpus/parse

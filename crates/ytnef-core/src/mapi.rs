@@ -180,8 +180,8 @@ pub fn parse<'a>(d: &'a [u8], l: &Limits) -> Result<MapiProps<'a>, HandlerError>
     let n = count(&mut r, l.max_mapi_count, "property count")?;
     let mut props = Vec::new();
     let mut extra = 0;
-    for _ in 0..n {
-        props.push(prop(&mut r, l, &mut extra)?);
+    for i in 1..=n {
+        props.push(prop(&mut r, l, &mut extra, i == n)?);
     }
     if extra > 0 {
         return Err(HandlerError::Overrun { extra });
@@ -258,7 +258,12 @@ fn pad(len: usize) -> usize {
     len.wrapping_neg() & 3
 }
 
-fn prop<'a>(r: &mut Reader<'a>, l: &Limits, extra: &mut usize) -> Result<Prop<'a>, HandlerError> {
+fn prop<'a>(
+    r: &mut Reader<'a>,
+    l: &Limits,
+    extra: &mut usize,
+    last: bool,
+) -> Result<Prop<'a>, HandlerError> {
     let tag = r.u32().map_err(at("property tag"))?;
     let name = if tag >> 16 >= 0x8000 {
         Some(name(r, l, extra)?)
@@ -273,9 +278,14 @@ fn prop<'a>(r: &mut Reader<'a>, l: &Limits, extra: &mut usize) -> Result<Prop<'a
         1
     };
     let mut values = Vec::new();
-    for _ in 0..n {
+    // C reads each further value by stepping its property loop index back,
+    // after the `i < count` check: of the last property it reads only the
+    // first value, and the rest stay empty (NULL, size 0).
+    let read = if last { 1 } else { n };
+    for _ in 0..read {
         values.push(value(r, ty & !MV_FLAG, multi, l, extra)?);
     }
+    values.resize(n, &[]);
     Ok(Prop { tag, name, values })
 }
 
@@ -502,26 +512,45 @@ mod tests {
 
     #[test]
     fn multi_value() {
+        // not the last property: see last_multi_value_reads_one_value
+        let with_tail = |mv: Vec<u8>| block(&[mv, le(&[tag(1, pt::LONG), 7])]);
+        let first = |d: &[u8]| -> Vec<Vec<u8>> {
+            let v = parse(d, &Limits::default()).unwrap();
+            assert_eq!(v.len(), 2);
+            v[0].values.iter().map(|x| x.to_vec()).collect()
+        };
         // MV LONG: count then values
-        let d = block(&[le(&[tag(0x0E01, pt::LONG | MV_FLAG), 3, 10, 20, 30])]);
-        let p = one(&d).unwrap();
+        let d = with_tail(le(&[tag(0x0E01, pt::LONG | MV_FLAG), 3, 10, 20, 30]));
+        let p = &parse(&d, &Limits::default()).unwrap()[0];
         assert!(p.is_multi());
         assert_eq!(p.prop_type(), pt::LONG);
-        assert_eq!(p.values, vec![&le(&[10])[..], &le(&[20]), &le(&[30])]);
+        assert_eq!(first(&d), vec![le(&[10]), le(&[20]), le(&[30])]);
 
         // MV strings: count, then (len, data, pad) per value; no per-value count
         let mut s = le(&[tag(0x0E02, pt::STRING8 | MV_FLAG), 2, 3]);
         s.extend(b"ab\0\0");
         s.extend(le(&[5]));
         s.extend(b"cdef\0\0\0\0");
-        let d = block(&[s]);
-        assert_eq!(one(&d).unwrap().values, vec![&b"ab\0"[..], b"cdef\0"]);
+        assert_eq!(
+            first(&with_tail(s)),
+            vec![b"ab\0".to_vec(), b"cdef\0".to_vec()]
+        );
 
         // zero or excessive counts fail like C's PREALLOCCHECK
         for n in [0, 1001] {
             let d = block(&[le(&[tag(1, pt::LONG | MV_FLAG), n])]);
             assert!(matches!(one(&d), Err(HandlerError::OutOfRange { .. })));
         }
+    }
+
+    #[test]
+    fn last_multi_value_reads_one_value() {
+        // C's property loop ends after the first value of the last property
+        let d = block(&[le(&[tag(0x0E01, pt::LONG | MV_FLAG), 3, 10, 20, 30])]);
+        assert_eq!(one(&d), Err(HandlerError::TrailingBytes { len: 8 }));
+        // the rest need not exist; their slots stay empty
+        let d = block(&[le(&[tag(0x0E01, pt::LONG | MV_FLAG), 3, 10])]);
+        assert_eq!(one(&d).unwrap().values, vec![&le(&[10])[..], &[], &[]]);
     }
 
     #[test]

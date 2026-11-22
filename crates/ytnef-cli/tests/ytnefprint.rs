@@ -91,6 +91,15 @@ fn fuzz_regressions() {
             "mapi-padding-overrun.tnef",
             "ERROR DURING MAPI READ\nRead 20 bytes, Expected 17 bytes\n3 bytes extra\n",
         ),
+        // C reads only the first value of a multi-valued last property
+        (
+            "mapi-last-multi-value.tnef",
+            "ERROR DURING MAPI READ\nRead 92 bytes, Expected 120 bytes\n28 bytes missing\n",
+        ),
+        (
+            "mapi-last-multi-value-short.tnef",
+            "ERROR DURING MAPI READ\nRead 92 bytes, Expected 120 bytes\n28 bytes missing\n",
+        ),
         // attributes before a truncated one are still traced
         (
             "truncated-after-attrs.tnef",
