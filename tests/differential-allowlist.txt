@@ -42,6 +42,10 @@ ytnefprint-v  fuzz/renddata-mac-binary.tnef
 ytnef         fuzz/rtf-text-stray-h.tnef
 ytnef-v       fuzz/rtf-text-stray-h.tnef
 ytnef-all     fuzz/rtf-text-stray-h.tnef
+# RRULE COUNT: C's GetRruleCount returns unsigned char, dropping the high byte
+ytnef         fuzz/rrule-count-high-byte.tnef   # C COUNT=10, Rust COUNT=46602 (0xB60A)
+ytnef-v       fuzz/rrule-count-high-byte.tnef
+ytnef-all     fuzz/rrule-count-high-byte.tnef
 
 # The same known differences in fuzz-corpus inputs (mutated fixtures)
 ytnef         corpus/  C Some("OUT/.        # names lose leading dots
@@ -55,3 +59,6 @@ ytnef-all     corpus/  | DESCRIPTION:
 ytnef         corpus/  file x.dat         # nesting depth 8 vs 16 (nested-tnef.tnef)
 ytnef-v       corpus/  memory block
 ytnef-all     corpus/  OUT/x.dat
+ytnef         corpus/  COUNT=             # RRULE COUNT high byte (rrule-count-high-byte.tnef)
+ytnef-v       corpus/  COUNT=
+ytnef-all     corpus/  COUNT=
